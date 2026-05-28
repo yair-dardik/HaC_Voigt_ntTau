@@ -119,6 +119,42 @@ def subtract_polynomial_baseline(x_px, y, coeff):
         return y
     return y - np.polyval(coeff, x_px)
 
+def apply_baseline_correction(x_px, profile):
+    """
+    Applies edge-window polynomial baseline correction to a 1D spectral profile.
+    Returns the corrected profile, the fitted coefficients, and the applied lift.
+    """
+    coeff = np.array([0.0])
+    lift = 0.0
+
+    # If disabled globally, just return the raw data safely
+    if not DO_BASELINE_CORRECT:
+        return profile, coeff, lift
+
+    # 1. Define Baseline edge windows
+    _left_pix = int(np.floor(nm_to_pixel(MIN_WAVELENGTH_NM)))
+    _right_pix = int(np.ceil(nm_to_pixel(MAX_WAVELENGTH_NM)))
+    left_window = (max(0, _left_pix), max(0, _left_pix) + 150)
+    right_window = (max(750, min(1450, _right_pix - 150)), min(DETECTOR_X_MAX, _right_pix))
+
+    # 2. Estimate and subtract the polynomial baseline
+    coeff = estimate_polynomial_baseline_from_edge_windows(
+        x_px,
+        profile,
+        left_window=left_window,
+        right_window=right_window,
+        degree=BASELINE_POLY_DEGREE,
+    )
+    corrected_profile = subtract_polynomial_baseline(x_px, profile, coeff)
+
+    # 3. Enforce non-negative values if required
+    if BASELINE_ENFORCE_NONNEGATIVE:
+        min_after = float(np.nanmin(corrected_profile))
+        if np.isfinite(min_after) and min_after < 0.0:
+            lift = -min_after
+            corrected_profile = corrected_profile + lift
+
+    return corrected_profile, coeff, lift
 
 def prompt_c3_tiff_path(exp_i=None, frame_i=None):
     """Ask for an experiment number and frame number, return the matching C3 ProEM TIFF path."""
@@ -140,7 +176,16 @@ def prompt_c3_tiff_path(exp_i=None, frame_i=None):
     print(f"File not found in {proem_dir} for frame {frame_i}. Please re-enter.")
 
 
-# --- Main flow ---
+
+
+
+#########################################################################
+########################## --- Main flow --- ############################
+#########################################################################
+
+
+
+
 tiff_path, exp_number, frame_number = prompt_c3_tiff_path(559,6)
 print(f"Loading: {tiff_path}")
 
@@ -154,29 +199,8 @@ profile = np.asarray(profile, dtype=float)
 # Pixel -> wavelength
 x_nm = pixel_to_nm(x_px)
 
-# Baseline edge windows (line-free regions on the left/right edges of the ROI)
-_left_pix = int(np.floor(nm_to_pixel(MIN_WAVELENGTH_NM)))
-_right_pix = int(np.ceil(nm_to_pixel(MAX_WAVELENGTH_NM)))
-BASELINE_LEFT_PX = (max(0, _left_pix), max(0, _left_pix) + 150)
-BASELINE_RIGHT_PX = (max(750, min(1450, _right_pix - 150)), min(DETECTOR_X_MAX, _right_pix))
-
-coeff = np.array([0.0])
-lift = 0.0
-if DO_BASELINE_CORRECT:
-    coeff = estimate_polynomial_baseline_from_edge_windows(
-        x_px,
-        profile,
-        left_window=BASELINE_LEFT_PX,
-        right_window=BASELINE_RIGHT_PX,
-        degree=BASELINE_POLY_DEGREE,
-    )
-    profile = subtract_polynomial_baseline(x_px, profile, coeff)
-
-    if BASELINE_ENFORCE_NONNEGATIVE:
-        min_after = float(np.nanmin(profile))
-        if np.isfinite(min_after) and min_after < 0.0:
-            lift = -min_after
-            profile = profile + lift
+# Baseline correction
+profile, coeff, lift = apply_baseline_correction(x_px, profile)
 
 print(
     f"Loaded C{exp_number} frame {frame_number}: {profile.size} samples, "
