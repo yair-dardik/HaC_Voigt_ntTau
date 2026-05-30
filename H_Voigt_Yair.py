@@ -106,10 +106,10 @@ x_nm_full_C1 = lambda_C1 + (x_full - center_C1) * nm_per_px
 
 ### C2 line gaussian fit ###
 
-start_px_C1 , end_px_C1 = 1186, 1216
+start_px_C2 , end_px_C2 = 1186, 1216
 # Full profiles from pixel 0 to 1300 (or image width if smaller)
-x_C2 = x_full[start_px_C1:end_px_C1]
-profile_C2 = profile_full[start_px_C1:end_px_C1]
+x_C2 = x_full[start_px_C2:end_px_C2]
+profile_C2 = profile_full[start_px_C2:end_px_C2]
 
 # --- Fit C2 ---
 p0_C2 = [np.max(profile_C2), x_C2[np.argmax(profile_C2)], 10, np.min(profile_C2)]
