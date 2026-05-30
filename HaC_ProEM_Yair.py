@@ -4,7 +4,9 @@ import sys
 import numpy as np
 import tifffile as tiff
 import matplotlib.pyplot as plt
-
+import math
+from scipy.optimize import curve_fit
+from scipy.special import wofz
 
 try:
     if hasattr(sys.stdout, 'reconfigure'):
@@ -20,6 +22,18 @@ PIXEL_CENTER_REF = 800.0
 LAMBDA_CENTER_REF_NM = 658.0
 R0_NM_PER_PX = 1.304735e-02
 R1_NM_PER_PX_PER_NM = -1.285110e-05
+
+# --- Physics & Fitting Constants ---
+lambda_Ha = 656.28    # H-alpha wavelength in nm
+lambda_C1 = 657.736   # C line wavelength in nm
+lambda_C2 = 658.1978  # C2 line wavelength in nm
+inst_fwhm_Ha = 0.05   # Instrumental FWHM for H-alpha in nm
+inst_sigma_Ha = inst_fwhm_Ha / (2.35482 * R0_NM_PER_PX) # Converted using ProEM resolution
+inst_sigma_C1 = 0     # for now until i ask about it, dont want to bound the fit
+inst_sigma_C2 = 0     # for now until i ask about it, dont want to bound the fit
+k_ev = 11600          # 11600 Kelvin = 1 eV
+mH = 1                # Hydrogen mass in amu
+mC = 12               # Carbon mass in amu
 
 # --- Wavelength window of interest ---
 MIN_WAVELENGTH_NM = 654.0
@@ -37,6 +51,18 @@ BASELINE_ENFORCE_NONNEGATIVE = True
 # --- C3 data root ---
 C3_BASE_DIR = r""
 C3_BASE_DIR = C3_BASE_DIR if C3_BASE_DIR else os.getcwd()
+
+# --- Mathematical Fitting Functions ---
+def voigt(x, amplitude, center, sigma, gamma, offset):
+    z = ((x - center) + 1j * gamma) / (sigma * np.sqrt(2))
+    return amplitude * np.real(wofz(z)) / (sigma * np.sqrt(2 * np.pi)) + offset
+
+def gaussian(x, amplitude, center, sigma, offset):
+    norm_factor = amplitude / (sigma * np.sqrt(2 * np.pi))
+    exponent = -((x - center)**2) / (2 * sigma**2)
+    return norm_factor * np.exp(exponent) + offset
+
+# --- Utility Functions ---
 
 def pixel_to_nm(x_px):
     """Convert pixel coordinate(s) to wavelength in nm using the instrument model."""
@@ -184,10 +210,10 @@ def prompt_c3_tiff_path(exp_i=None, frame_i=None):
 #########################################################################
 
 
-
-if __name__ == "__main__":
-    tiff_path, exp_number, frame_number = prompt_c3_tiff_path(559,6)
-    print(f"Loading: {tiff_path}")
+def extract_nt_from_frame(exp_i, frame_i, do_plot=False):
+    tiff_path, exp_number, frame_number = prompt_c3_tiff_path(exp_i,frame_i)
+    print(f"\n=====================================")
+    print(f"Loading C{exp_number} Frame {frame_number}")
 
     # Pixel range covering [MIN_WAVELENGTH_NM, MAX_WAVELENGTH_NM]
     _min_pix = max(0, int(np.floor(nm_to_pixel(MIN_WAVELENGTH_NM))))
@@ -202,23 +228,132 @@ if __name__ == "__main__":
     # Baseline correction
     profile, coeff, lift = apply_baseline_correction(x_px, profile)
 
-    print(
-        f"Loaded C{exp_number} frame {frame_number}: {profile.size} samples, "
-        f"wavelength range [{x_nm[0]:.3f}, {x_nm[-1]:.3f}] nm"
-    )
-    if DO_BASELINE_CORRECT:
-        print(
-            f"Baseline correction (degree {BASELINE_POLY_DEGREE}): "
-            f"coeff={np.array2string(coeff, precision=4)}, lift={lift:.6g}"
-        )
-    else:
-        print("Baseline correction: disabled")
+    # Helper function to dynamically slice arrays based on physical wavelength
+    #window_nm is the half-width of the window around the line center to consider for fitting
+    def get_roi(lam_center, window_nm):
+        mask = (x_nm >= lam_center - window_nm) & (x_nm <= lam_center + window_nm)
+        return x_px[mask], x_nm[mask], profile[mask]
 
-    plt.figure(figsize=(8, 5))
-    plt.plot(x_nm, profile)
-    plt.xlabel("Wavelength (nm)")
-    plt.ylabel("Intensity [a.u.]")
-    plt.title(f"C{exp_number} frame {frame_number}")
+    # Initialize return variables safely in case of failure
+    n_e_cm3 = 0
+    T_C1_eV = 0
+    T_C2_eV = 0
+    try:
+        # --- 1. Fit Hα (Voigt) ---
+        x_px_Ha, x_nm_Ha, prof_Ha = get_roi(lambda_Ha, 0.6)
+        p0_Ha = [np.max(prof_Ha), x_px_Ha[np.argmax(prof_Ha)], 3, 3, np.min(prof_Ha)]
+        bounds_Ha = ([0, x_px_Ha[0], inst_sigma_Ha, 0, 0], [np.inf, x_px_Ha[-1], 100, 100, np.max(prof_Ha)])
+        popt_Ha, _ = curve_fit(voigt, x_px_Ha, prof_Ha, p0=p0_Ha, bounds=bounds_Ha)
+        amp_Ha, cen_Ha, sig_Ha, gam_Ha, off_Ha = popt_Ha
+        fit_Ha = voigt(x_px_Ha, amp_Ha, cen_Ha, sig_Ha, gam_Ha, off_Ha)
+
+        # --- 2. Fit C1 (Gaussian) ---
+        x_px_C1, x_nm_C1, prof_C1 = get_roi(lambda_C1, 0.2)
+        p0_C1 = [np.max(prof_C1), x_px_C1[np.argmax(prof_C1)], 3, np.min(prof_C1)]
+        bounds_C1 = ([0, x_px_C1[0], inst_sigma_C1, 0], [np.inf, x_px_C1[-1], 100, np.max(prof_C1)])
+        popt_C1, _ = curve_fit(gaussian, x_px_C1, prof_C1, p0=p0_C1, bounds=bounds_C1)
+        amp_C1, cen_C1, sig_C1, off_C1 = popt_C1
+        fit_C1 = gaussian(x_px_C1, amp_C1, cen_C1, sig_C1, off_C1)
+
+        # --- 3. Fit C2 (Gaussian) ---
+        x_px_C2, x_nm_C2, prof_C2 = get_roi(lambda_C2, 0.2)
+        p0_C2 = [np.max(prof_C2), x_px_C2[np.argmax(prof_C2)], 3, np.min(prof_C2)]
+        bounds_C2 = ([0, x_px_C2[0], inst_sigma_C2, 0], [np.inf, x_px_C2[-1], 100, np.max(prof_C2)])
+        popt_C2, _ = curve_fit(gaussian, x_px_C2, prof_C2, p0=p0_C2, bounds=bounds_C2)
+        amp_C2, cen_C2, sig_C2, off_C2 = popt_C2
+        fit_C2 = gaussian(x_px_C2, amp_C2, cen_C2, sig_C2, off_C2)
+
+        # --- 4. Plasma Diagnostics ---
+        
+        # H-alpha Density Calculation
+        gam_Ha_nm = gam_Ha * R0_NM_PER_PX
+        stark_fwhm_nm = 2 * gam_Ha_nm
+        if stark_fwhm_nm > 0:
+            n_e_cm3 = 10**17 * (stark_fwhm_nm / 1.098)**1.471
+            print(f"Hα Electron Density (n_e):  {n_e_cm3:.2e} cm^-3")
+
+        # C1 Temperature Calculation
+        sig_C1_nm = sig_C1 * R0_NM_PER_PX
+        inst_sigma_C1_nm = inst_sigma_C1 * R0_NM_PER_PX
+        if sig_C1_nm > inst_sigma_C1_nm:
+            sig_th_C1_nm = math.sqrt(sig_C1_nm**2 - inst_sigma_C1_nm**2)
+            mc2_C_eV = 931.49e6 * mC
+            T_C1_eV = mc2_C_eV * (sig_th_C1_nm / lambda_C1)**2
+            print(f"C1 Temperature (T):         {T_C1_eV:.2f} eV")
+
+        # C2 Temperature Calculation
+        sig_C2_nm = sig_C2 * R0_NM_PER_PX
+        inst_sigma_C2_nm = inst_sigma_C2 * R0_NM_PER_PX
+        if sig_C2_nm > inst_sigma_C2_nm:
+            sig_th_C2_nm = math.sqrt(sig_C2_nm**2 - inst_sigma_C2_nm**2)
+            mc2_C_eV = 931.49e6 * mC
+            # Fixed lambda_C1 to lambda_C2 here
+            T_C2_eV = mc2_C_eV * (sig_th_C2_nm / lambda_C2)**2 
+            print(f"C2 Temperature (T):         {T_C2_eV:.2f} eV")
+
+    except RuntimeError as e:
+        print(f"WARNING: Curve fitting failed for frame {frame_number}. Returning zeros.")
+        return 0, 0, 0
+
+    # --- Plotting the Fit (Only if do_plot is True) ---
+    if do_plot:
+        plt.figure(figsize=(8, 5))
+        plt.plot(x_nm, profile, label="Raw Profile", color='lightgray')
+        
+        plt.plot(x_nm_Ha, fit_Ha, 'r--', label="Hα Voigt Fit")
+        plt.plot(x_nm_C1, fit_C1, 'g--', label="C1 Gaussian Fit")
+        plt.plot(x_nm_C2, fit_C2, 'b--', label="C2 Gaussian Fit")
+        
+        plt.xlabel("Wavelength (nm)")
+        plt.ylabel("Intensity [a.u.]")
+        plt.title(f"C{exp_number} Frame {frame_number} Fits")
+        plt.grid(True)
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
+
+    # Return n_e from Ha, T from C1, and T from C2
+    return n_e_cm3, T_C1_eV, T_C2_eV
+
+
+if __name__ == "__main__":
+    # @CHANGE_ME: Set the experiment and frame numbers you want to analyze here
+    exp_i = 559
+    first_frame = 5
+    last_frame = 50
+
+    frame_amount = last_frame - first_frame + 1
+    n = [0] * frame_amount
+    t1 = [0] * frame_amount
+    t2 = [0] * frame_amount # Array for the C2 temperatures
+    
+    for frame_i in range(first_frame, last_frame + 1):
+        # You can test a single frame plot by changing this temporarily, e.g., if frame_i == 5: extract_nt_from_frame(exp_i, frame_i, do_plot=True)
+        n[frame_i - first_frame], t1[frame_i - first_frame], t2[frame_i - first_frame] = extract_nt_from_frame(exp_i, frame_i, do_plot=False)
+
+    # Plot n_e, T_C1, and T_C2 vs frame_i
+    plt.figure(figsize=(15, 5)) # Increased width to fit 3 plots nicely
+    
+    plt.subplot(1, 3, 1)
+    plt.plot(range(first_frame, last_frame + 1), n, marker='o', color='blue')
+    plt.xlabel("Frame Number")
+    plt.ylabel("Electron Density (n_e) [cm^-3]")
+    plt.title(f"C{exp_i} n_e vs Frame")
     plt.grid(True)
+    
+    plt.subplot(1, 3, 2)
+    plt.plot(range(first_frame, last_frame + 1), t1, marker='o', color='green')
+    plt.xlabel("Frame Number")
+    plt.ylabel("Temperature (T_C1) [eV]")
+    plt.title(f"C{exp_i} T(C1) vs Frame")
+    plt.grid(True)
+
+    plt.subplot(1, 3, 3)
+    plt.plot(range(first_frame, last_frame + 1), t2, marker='o', color='orange')
+    plt.xlabel("Frame Number")
+    plt.ylabel("Temperature (T_C2) [eV]")
+    plt.title(f"C{exp_i} T(C2) vs Frame")
+    plt.grid(True)
+    
     plt.tight_layout()
     plt.show()

@@ -4,3 +4,4 @@
 3. C gaussian center is not exacly the lambda in Nist,
  but lambda found in Nist is not one of the main ones
 4. possible that C1 is 2 peaks?
+5. i get t from c1 and c2 do i average?
