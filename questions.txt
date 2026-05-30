@@ -1,0 +1,6 @@
+1. should i change the Ha y range in the Voigt old script when searching the C lines?
+ is it even relevant fr the new script?
+2. inst sigma for the C lines (important for thermal calc)
+3. C gaussian center is not exacly the lambda in Nist,
+ but lambda found in Nist is not one of the main ones
+4. possible that C1 is 2 peaks?

@@ -185,40 +185,40 @@ def prompt_c3_tiff_path(exp_i=None, frame_i=None):
 
 
 
+if __name__ == "__main__":
+    tiff_path, exp_number, frame_number = prompt_c3_tiff_path(559,6)
+    print(f"Loading: {tiff_path}")
 
-tiff_path, exp_number, frame_number = prompt_c3_tiff_path(559,6)
-print(f"Loading: {tiff_path}")
+    # Pixel range covering [MIN_WAVELENGTH_NM, MAX_WAVELENGTH_NM]
+    _min_pix = max(0, int(np.floor(nm_to_pixel(MIN_WAVELENGTH_NM))))
+    _max_pix = min(DETECTOR_X_MAX, int(np.ceil(nm_to_pixel(MAX_WAVELENGTH_NM))) + 1)
 
-# Pixel range covering [MIN_WAVELENGTH_NM, MAX_WAVELENGTH_NM]
-_min_pix = max(0, int(np.floor(nm_to_pixel(MIN_WAVELENGTH_NM))))
-_max_pix = min(DETECTOR_X_MAX, int(np.ceil(nm_to_pixel(MAX_WAVELENGTH_NM))) + 1)
+    x_px, profile = load_full_profile(tiff_path, Y_RANGE, x_min=_min_pix, x_max=_max_pix)
+    profile = np.asarray(profile, dtype=float)
 
-x_px, profile = load_full_profile(tiff_path, Y_RANGE, x_min=_min_pix, x_max=_max_pix)
-profile = np.asarray(profile, dtype=float)
+    # Pixel -> wavelength
+    x_nm = pixel_to_nm(x_px)
 
-# Pixel -> wavelength
-x_nm = pixel_to_nm(x_px)
+    # Baseline correction
+    profile, coeff, lift = apply_baseline_correction(x_px, profile)
 
-# Baseline correction
-profile, coeff, lift = apply_baseline_correction(x_px, profile)
-
-print(
-    f"Loaded C{exp_number} frame {frame_number}: {profile.size} samples, "
-    f"wavelength range [{x_nm[0]:.3f}, {x_nm[-1]:.3f}] nm"
-)
-if DO_BASELINE_CORRECT:
     print(
-        f"Baseline correction (degree {BASELINE_POLY_DEGREE}): "
-        f"coeff={np.array2string(coeff, precision=4)}, lift={lift:.6g}"
+        f"Loaded C{exp_number} frame {frame_number}: {profile.size} samples, "
+        f"wavelength range [{x_nm[0]:.3f}, {x_nm[-1]:.3f}] nm"
     )
-else:
-    print("Baseline correction: disabled")
+    if DO_BASELINE_CORRECT:
+        print(
+            f"Baseline correction (degree {BASELINE_POLY_DEGREE}): "
+            f"coeff={np.array2string(coeff, precision=4)}, lift={lift:.6g}"
+        )
+    else:
+        print("Baseline correction: disabled")
 
-plt.figure(figsize=(8, 5))
-plt.plot(x_nm, profile)
-plt.xlabel("Wavelength (nm)")
-plt.ylabel("Intensity [a.u.]")
-plt.title(f"C{exp_number} frame {frame_number}")
-plt.grid(True)
-plt.tight_layout()
-plt.show()
+    plt.figure(figsize=(8, 5))
+    plt.plot(x_nm, profile)
+    plt.xlabel("Wavelength (nm)")
+    plt.ylabel("Intensity [a.u.]")
+    plt.title(f"C{exp_number} frame {frame_number}")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
