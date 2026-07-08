@@ -29,8 +29,8 @@ lambda_C1 = 657.736   # C line wavelength in nm
 lambda_C2 = 658.1978  # C2 line wavelength in nm
 inst_fwhm_Ha = 0.05   # Instrumental FWHM for H-alpha in nm
 inst_sigma_Ha = inst_fwhm_Ha / (2.35482 * R0_NM_PER_PX) # Converted using ProEM resolution
-inst_sigma_C1 = 0     # for now until i ask about it, dont want to bound the fit
-inst_sigma_C2 = 0     # for now until i ask about it, dont want to bound the fit
+inst_sigma_C1 = inst_sigma_Ha    # for now until i ask about it, dont want to bound the fit
+inst_sigma_C2 = inst_sigma_Ha   # for now until i ask about it, dont want to bound the fit
 k_ev = 11600          # 11600 Kelvin = 1 eV
 mH = 1                # Hydrogen mass in amu
 mC = 12               # Carbon mass in amu
@@ -41,7 +41,7 @@ MAX_WAVELENGTH_NM = 659.0
 
 # --- Detector / acquisition settings ---
 DETECTOR_X_MAX = 1600
-Y_RANGE = (1, 4)  # rows of the ProEM frame averaged into the 1-D profile
+Y_RANGE = (1, 2)  # rows of the ProEM frame averaged into the 1-D profile
 
 # --- Baseline correction settings ---
 DO_BASELINE_CORRECT = True   # set False to skip baseline subtraction entirely
@@ -321,6 +321,8 @@ if __name__ == "__main__":
     exp_i = 559
     first_frame = 5
     last_frame = 50
+    first_frame_t = 8
+    last_frame_t = 22
 
     frame_amount = last_frame - first_frame + 1
     n = [0] * frame_amount
@@ -329,6 +331,8 @@ if __name__ == "__main__":
     
     for frame_i in range(first_frame, last_frame + 1):
         # You can test a single frame plot by changing this temporarily, e.g., if frame_i == 5: extract_nt_from_frame(exp_i, frame_i, do_plot=True)
+        if(frame_i == 28):  # plot only for frame 
+            extract_nt_from_frame(exp_i, frame_i, do_plot=True)
         n[frame_i - first_frame], t1[frame_i - first_frame], t2[frame_i - first_frame] = extract_nt_from_frame(exp_i, frame_i, do_plot=False)
 
     # Plot n_e, T_C1, and T_C2 vs frame_i
@@ -341,18 +345,22 @@ if __name__ == "__main__":
     plt.title(f"C{exp_i} n_e vs Frame")
     plt.grid(True)
     
+    t_start_idx = first_frame_t - first_frame
+    t_end_idx = last_frame_t - first_frame + 1
+    t_frames = range(first_frame_t, last_frame_t + 1)
+
     plt.subplot(1, 3, 2)
-    plt.plot(range(first_frame, last_frame + 1), t1, marker='o', color='green')
+    plt.plot(t_frames, t1[t_start_idx:t_end_idx], marker='o', color='green')
     plt.xlabel("Frame Number")
     plt.ylabel("Temperature (T_C1) [eV]")
-    plt.title(f"C{exp_i} T(C1) vs Frame")
+    plt.title(f"C{exp_i} T(C1) vs Frame (not all frames)")
     plt.grid(True)
 
     plt.subplot(1, 3, 3)
-    plt.plot(range(first_frame, last_frame + 1), t2, marker='o', color='orange')
+    plt.plot(t_frames, t2[t_start_idx:t_end_idx], marker='o', color='orange')
     plt.xlabel("Frame Number")
     plt.ylabel("Temperature (T_C2) [eV]")
-    plt.title(f"C{exp_i} T(C2) vs Frame")
+    plt.title(f"C{exp_i} T(C2) vs Frame (not all frames)")
     plt.grid(True)
     
     plt.tight_layout()
