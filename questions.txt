@@ -1,7 +1,26 @@
 1. should i change the Ha y range in the Voigt old script when searching the C lines?
- is it even relevant fr the new script?
+ is it even relevant fr the new script? 
+ update: they said it probably is the same but it makes a 10% difference so probably important
 2. inst sigma for the C lines (important for thermal calc)
+update: i know use the same as H_alpha, it makes very little difference but Sharon can check it
 3. C gaussian center is not exacly the lambda in Nist,
  but lambda found in Nist is not one of the main ones
 4. possible that C1 is 2 peaks?
 5. i get t from c1 and c2 do i average?
+update: force it to be same in the fit
+
+
+things need checking:
+
+are the C really voight - seems stark is
+minor like sharon said
+
+does mnist sopurt my mixed peaks hypo? seems not, and the waveengths
+are shifted a bit
+
+seems lik theres a pronlem with pixel_to_nm
+
+after suppos fix c1 seems more relible than c2
+which might have a non c line in it
+from the 3rd graph in nt vs frame file
+we can see c1 gives good n_e
