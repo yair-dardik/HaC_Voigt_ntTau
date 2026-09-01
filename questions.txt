@@ -24,3 +24,19 @@ after suppos fix c1 seems more relible than c2
 which might have a non c line in it
 from the 3rd graph in nt vs frame file
 we can see c1 gives good n_e
+
+temperatures too high, migh be due to zeeman or turbulent
+
+need to ask if any more materials
+"Ask Sharon what the electrodes (and anything else that could ablate)
+ are made of in C559. Reason: the 657.8 nm line carries 
+ ~55% more flux than the C II doublet's fixed 2:1 branching ratio allows,
+  self-absorption can only push that ratio down not up, so something else is emitting there
+   — likely Cu II or Fe I depending on materials. One sentence from her settles it."
+
+C2 flat shape and ratio to C1 makes mee think of self absorption
+
+Two things I'd still check when you have a moment, both from earlier and neither addressed by this pass:
+
+The T ≤ 0.2 eV global limit. If it's a min over frames and σ_inst is defined as min(sigmas[FLOOR_FRAMES]), the minimizing frame has excess ≡ 0 by construction, and that number is a tautology rather than a bound.
+Frame 18's significance halving while both neighbours rose — likely a fit that found a different local minimum, not weaker data.

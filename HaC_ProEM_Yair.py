@@ -366,7 +366,7 @@ if __name__ == "__main__":
     
     for frame_i in range(first_frame, last_frame + 1):
         # You can test a single frame plot by changing this temporarily, e.g., if frame_i == 5: extract_nt_from_frame(exp_i, frame_i, do_plot=True)
-        if(frame_i == 13):  # plot only for frame 
+        if(frame_i == 18):  # plot only for frame 
             extract_nt_from_frame(exp_i, frame_i, do_plot=True)
         n[frame_i - first_frame], t1[frame_i - first_frame], t2[frame_i - first_frame] = extract_nt_from_frame(exp_i, frame_i, do_plot=False)
 

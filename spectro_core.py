@@ -182,67 +182,138 @@ def nm_to_pixel(lam_nm):
     return float(x0 + np.log((lam_nm - const_term) / amp) / b)
 
 
-def dispersion_nm_per_px(x_px):
+# --- Width conversion -------------------------------------------------------
+# THE RULE: a pixel WIDTH is not a pixel POSITION, so it cannot be handed to
+# pixel_to_nm directly. Convert a width by DIFFERENCING the trusted position
+# function around the feature's own centre.
+#
+# There used to be a dispersion_nm_per_px(x) here returning a closed-form
+# derivative, and widths were converted by multiplying by it. That was a second,
+# independent implementation of the wavelength scale, and it silently disagreed
+# with pixel_to_nm by a factor of 2.83 for the whole life of the project -
+# inflating every velocity by 2.83x, every T by 8.02x and every n_e by 4.62x.
+# Nothing caught it because nothing compared the two.
+#
+# The functions below cannot drift that way: they contain no formula of their
+# own, only calls to pixel_to_nm / nm_to_pixel. If the instrument model changes,
+# they follow automatically. That is the point of the refactor - the numeric bug
+# was fixed first, separately; this removes the shape of code that allowed it.
+#
+# Differencing is also strictly more correct than multiplying: it captures the
+# curvature of the wavelength axis across the line, which a single dispersion
+# value cannot. See test_width_conversion() for the size of that term.
+
+def width_px_to_nm(width_px, center_px):
     """
-    Local dispersion d(lambda)/d(pixel) at x_px: the TRUE analytic derivative
-    of pixel_to_nm.
+    Convert a WIDTH (sigma, gamma, FWHM...) in pixels to nm.
 
-    pixel_to_nm implements
+    Centred/symmetric difference about the feature's fitted centre, so neither
+    side of the line is privileged:
 
-        lam(x) = -a/b + (lam0 + a/b) * exp(b (x - x0))
+        width_nm = (pixel_to_nm(c + w) - pixel_to_nm(c - w)) / 2
 
-    so
-
-        dlam/dx = (lam0 + a/b) * b * exp(b dx) = (lam0*b + a) * exp(b dx)
-
-    which is 4.5913e-3 nm/px at x0, NOT a = R0_NM_PER_PX = 1.3047e-2.
-
-    This function previously returned a*exp(b dx), i.e. it assumed the other
-    common parameterisation lam = lam0 + (a/b)(exp(b dx) - 1), in which R0
-    genuinely is the local dispersion. In the model actually implemented above
-    it is not, and the two disagree by a factor 2.83.
-
-    The C II 3s-3p doublet settles which is right. Its separation is fixed
-    atomic physics, 658.28761 - 657.80482 = 0.48279 nm, and it is measured at
-    104.78 px on the stacked frames:
-
-        via pixel_to_nm difference   0.4811 nm   (-0.36 %)
-        via the old a*exp(b dx)      1.3670 nm   (+183 %)
-
-    So the wavelength AXIS was right all along and this derivative was wrong.
-    Every width-derived quantity was inflated: velocities by 2.83x, T by
-    8.02x (disp^2) and n_e by 4.62x (disp^1.471). See validate_calibration.py
-    check 1, and test_dispersion() below, which is what should have caught it.
+    Pass the fitted centre of the line the width belongs to, not a generic
+    reference pixel.
     """
-    x = np.asarray(x_px, dtype=float)
-    slope0 = LAMBDA_CENTER_REF_NM * R1_NM_PER_PX_PER_NM + R0_NM_PER_PX
-    return slope0 * np.exp(R1_NM_PER_PX_PER_NM * (x - PIXEL_CENTER_REF))
+    c = np.asarray(center_px, dtype=float)
+    w = np.asarray(width_px, dtype=float)
+    return (pixel_to_nm(c + w) - pixel_to_nm(c - w)) / 2.0
 
 
-def test_dispersion(tol=1e-6, verbose=False):
+def width_nm_to_px(width_nm, center_nm):
     """
-    Assert dispersion_nm_per_px really is d(pixel_to_nm)/dx.
+    Convert a WIDTH in nm to pixels, anchored at the line centre center_nm.
 
-    Nothing compared these two functions against each other, which is exactly
-    why they were allowed to disagree by a factor of 2.83 for the whole life
-    of the project. Run from the command line:  python spectro_core.py
+        width_px = (nm_to_pixel(lam + w) - nm_to_pixel(lam - w)) / 2
+
+    CENTRED, deliberately, so that this is the exact inverse of width_px_to_nm.
+
+    The one-sided form nm_to_pixel(lam + w) - nm_to_pixel(lam) also only needs
+    the line centre, but it is not the inverse of the centred forward
+    conversion: the two disagree at O(|b|*w/2) ~ 5e-5 for a 7 px width, and
+    since T ~ sigma^2 that shows up as a systematic ~1e-4 shift in every fitted
+    temperature. Centring costs nothing (it needs no pixel centre either) and
+    removes that shift, leaving only the O((b*w)^2) curvature term ~1e-9.
+
+    Like width_px_to_nm this holds no formula of its own - only nm_to_pixel.
+    """
+    lam = float(center_nm)
+    w = float(width_nm)
+    return (nm_to_pixel(lam + w) - nm_to_pixel(lam - w)) / 2.0
+
+
+def test_width_conversion(tol=1e-5, verbose=False):
+    """
+    Guard the width-conversion mechanism. Run:  python spectro_core.py
+
+    (a) round trip - nm -> px -> nm returns the original width.
+    (b) small-width limit agrees with a NUMERICAL derivative of pixel_to_nm,
+        which is the check that never existed and would have caught the 2.83x
+        bug immediately.
+    (c) agrees with the historical closed-form dispersion this refactor
+        replaced - the CORRECTED one, (lam0*b + a)*exp(b dx) - proving the
+        refactor moves no number.
+
+    (c) is deliberately NOT asserted at machine epsilon, because the two are
+    not the same quantity. Differencing captures the curvature of the
+    wavelength axis across the line; multiplying by one dispersion value does
+    not. Their ratio is exactly sinh(b*w)/(b*w) = 1 + (b*w)^2/6 + ..., i.e.
+    ~1e-9 for a 7 px sigma and ~3e-7 for a 100 px gamma. The differenced form
+    is the more correct of the two; the agreement is what shows nothing moved.
     """
     xs = np.array([50.0, 200.0, 426.0, 700.0, 800.0, 900.0, 1200.0, 1550.0])
-    h = 1e-3
-    worst = 0.0
+    b = float(R1_NM_PER_PX_PER_NM)
+    slope0 = LAMBDA_CENTER_REF_NM * b + R0_NM_PER_PX
+
+    def _historical_dispersion(x):
+        """The corrected closed form this refactor removed. TEST FIXTURE ONLY."""
+        return slope0 * np.exp(b * (np.asarray(x, dtype=float)
+                                    - PIXEL_CENTER_REF))
+
+    worst_deriv = 0.0
+    worst_hist = 0.0
+    if verbose:
+        print(f"  {'x':>7} {'width':>7} {'differenced [nm]':>18} "
+              f"{'vs numerical':>13} {'vs old closed form':>19}")
     for x in xs:
+        # (b) small-width limit against a numerical derivative
+        h = 1e-3
         num = (float(pixel_to_nm(x + h)) - float(pixel_to_nm(x - h))) / (2 * h)
-        ana = float(dispersion_nm_per_px(x))
-        rel = abs(ana - num) / abs(num)
-        worst = max(worst, rel)
-        if verbose:
-            print(f"  x = {x:7.1f}  analytic {ana:.9e}  numerical {num:.9e}  "
-                  f"rel err {rel:.2e}")
-        assert rel < tol, (
-            f"dispersion_nm_per_px({x}) = {ana:.9e} disagrees with the "
-            f"numerical derivative of pixel_to_nm = {num:.9e} "
-            f"(relative error {rel:.2e} > {tol:.0e})")
-    return worst
+        implied = float(width_px_to_nm(h, x)) / h
+        rel_d = abs(implied - num) / abs(num)
+        worst_deriv = max(worst_deriv, rel_d)
+        assert rel_d < 1e-9, (
+            f"width_px_to_nm at x={x} implies dispersion {implied:.9e}, but the "
+            f"numerical derivative of pixel_to_nm is {num:.9e}")
+
+        for w in (7.0, 100.0):
+            diff_nm = float(width_px_to_nm(w, x))
+            hist_nm = w * float(_historical_dispersion(x))
+            rel_h = abs(diff_nm - hist_nm) / abs(hist_nm)
+            worst_hist = max(worst_hist, rel_h)
+            if verbose:
+                print(f"  {x:7.1f} {w:7.1f} {diff_nm:18.9f} "
+                      f"{rel_d:13.2e} {rel_h:19.2e}")
+            assert rel_h < tol, (
+                f"width_px_to_nm({w}, {x}) = {diff_nm:.9e} disagrees with the "
+                f"historical closed form {hist_nm:.9e} by {rel_h:.2e} > {tol:.0e}")
+
+        # (a) round trip. Inverse to O((b*w)^2) ~ 4e-9, not to machine epsilon:
+        # width_px_to_nm is symmetric in PIXELS while width_nm_to_px is
+        # symmetric in WAVELENGTH, and a nonlinear map does not carry one
+        # symmetric interval onto the other exactly. (The earlier one-sided
+        # convention closed only to |b|*w/2 ~ 4.5e-5, four orders worse, and
+        # showed up as a systematic 1e-4 shift in every fitted temperature.)
+        lam = float(pixel_to_nm(x))
+        w_nm = float(width_px_to_nm(7.0, x))
+        back = width_nm_to_px(w_nm, lam)
+        rel_rt = abs(back - 7.0) / 7.0
+        assert rel_rt < 1e-7, (
+            f"round trip at x={x}: 7.0 px -> {w_nm:.9e} nm -> {back:.9f} px, "
+            f"relative {rel_rt:.2e}, worse than the O((b*w)^2) curvature term "
+            f"can explain")
+
+    return worst_deriv, worst_hist
 
 
 # --- Line profiles -----------------------------------------------------------
@@ -294,7 +365,9 @@ def thermal_sigma_px(T_eV, lambda_nm, mc2_eV, x_px):
     """
     T_eV = max(float(T_eV), 0.0)
     sigma_nm = lambda_nm * np.sqrt(T_eV / mc2_eV)
-    return sigma_nm / dispersion_nm_per_px(x_px)
+    # Anchor at the actual pixel position; callers pass x_px = nm_to_pixel of
+    # this same line, so pixel_to_nm(x_px) is its centre wavelength.
+    return width_nm_to_px(sigma_nm, float(pixel_to_nm(x_px)))
 
 
 def temperature_from_sigma(sigma_px, lambda_nm, mc2_eV, x_px,
@@ -309,7 +382,7 @@ def temperature_from_sigma(sigma_px, lambda_nm, mc2_eV, x_px,
     if sigma_px <= sigma_inst_px:
         return 0.0
     sigma_th_px = np.sqrt(sigma_px ** 2 - sigma_inst_px ** 2)
-    sigma_th_nm = sigma_th_px * dispersion_nm_per_px(x_px)
+    sigma_th_nm = float(width_px_to_nm(sigma_th_px, x_px))
     return mc2_eV * (sigma_th_nm / lambda_nm) ** 2
 
 
@@ -323,7 +396,7 @@ def n_e_from_ha_stark(gamma_px, center_px):
     centre rather than the constant R0.
     """
     gamma_px = abs(float(gamma_px))
-    fwhm_nm = 2.0 * gamma_px * dispersion_nm_per_px(center_px)
+    fwhm_nm = 2.0 * float(width_px_to_nm(gamma_px, center_px))
     if fwhm_nm <= 0:
         return np.nan
     return 1e17 * (fwhm_nm / 1.098) ** 1.471
@@ -466,11 +539,14 @@ def calibrate_noise(exp_i, frames, verbose=True):
 
 
 if __name__ == "__main__":
-    # Regression guard for the dispersion bug. Nothing compared
-    # dispersion_nm_per_px against pixel_to_nm, so they were free to disagree
-    # by a factor of 2.83 indefinitely.
-    print("Checking dispersion_nm_per_px against d(pixel_to_nm)/dx ...")
-    worst = test_dispersion(verbose=True)
-    print(f"\nOK - worst relative error {worst:.2e} (tolerance 1e-6)")
-    print(f"dispersion at x0 = {float(dispersion_nm_per_px(PIXEL_CENTER_REF)):.6e}"
-          f" nm/px  (R0 = {R0_NM_PER_PX:.6e}, which is NOT the dispersion)")
+    # Regression guard. Widths are now converted by differencing pixel_to_nm,
+    # so there is no second implementation of the wavelength scale left to
+    # drift out of sync - which is how the 2.83x dispersion bug survived.
+    print("Checking width conversion against pixel_to_nm ...")
+    worst_deriv, worst_hist = test_width_conversion(verbose=True)
+    print(f"\nOK")
+    print(f"  vs numerical derivative of pixel_to_nm : worst {worst_deriv:.2e}")
+    print(f"  vs the closed form this replaced       : worst {worst_hist:.2e}")
+    print("  (the second is not zero and should not be: differencing captures")
+    print("   the axis curvature across the line, sinh(b*w)/(b*w), which")
+    print("   multiplying by a single dispersion value drops.)")

@@ -131,7 +131,8 @@ def build_params(frames, sigma_inst, model):
     params.add("sigma_inst", value=sigma_inst, vary=False)
     if model == "stark-tied":
         params.add("gamma_ref",
-                   value=3.9e-19 * N_E_REF / sc.dispersion_nm_per_px(752.0),
+                   value=sc.width_nm_to_px(3.9e-19 * N_E_REF,
+                                           float(sc.pixel_to_nm(752.0))),
                    min=0.0, max=40.0)
     if model == "gamma-free":
         params.add("T_eV", value=5.0, min=0.0, max=T_MAX_EV)
@@ -186,7 +187,6 @@ def test_stark_scaling(frames, sigma_inst, lines, verbose=True):
     n_e. If the excess is Stark it must be the same at the same density.
     """
     px, lam = _line_centre(lines)
-    disp = sc.dispersion_nm_per_px(px)
 
     rows = []
     for fr in frames:
@@ -205,7 +205,8 @@ def test_stark_scaling(frames, sigma_inst, lines, verbose=True):
         excess = np.sqrt(max(sigma ** 2 - sigma_inst ** 2, 0.0))
         rows.append({"frame": fr["frame"], "n_e": fr["n_e"], "sigma_px": sigma,
                      "excess_px": excess,
-                     "excess_kms": sc.C_KM_S * excess * disp / lam})
+                     "excess_kms": sc.C_KM_S
+                     * float(sc.width_px_to_nm(excess, px)) / lam})
 
     peak = max(rows, key=lambda r: r["n_e"])["frame"]
     rise = [r for r in rows if r["frame"] <= peak]
@@ -362,8 +363,8 @@ def main():
     print("  floor of these same lines, so it is an upper bound on the true")
     print("  resolution, and any real temperature is at or below this value.")
     # Derived from the fit, not hard-coded - these scale with the dispersion.
-    _ex = np.array([r["excess_kms"] for r in rows
-                    if 9 <= r["frame"] <= 13 and np.isfinite(r["excess_kms"])])
+    _ex = np.array([w["excess_kms"] for w in widths
+                    if 9 <= w["frame"] <= 13 and np.isfinite(w["excess_kms"])])
     if _ex.size:
         _ceil = sc.C_KM_S * np.sqrt(24.38 / sc.MC2_C_EV)
         print(f"\n  The frames on the density rise (roughly 9-13) carry an "

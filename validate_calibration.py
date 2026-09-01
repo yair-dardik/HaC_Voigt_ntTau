@@ -69,15 +69,36 @@ def _pixel_to_nm_with_R0(a, x):
     return (-a / b) + (lam0 + a / b) * np.exp(b * (x - x0))
 
 
+# --- HISTORICAL FIXTURES -----------------------------------------------------
+# Neither of these is used to convert anything. Production code now converts
+# widths by differencing pixel_to_nm (sc.width_px_to_nm), and the closed-form
+# dispersion function has been deleted. These two reproduce the before/after of
+# the bug so CHECK 1 can still document it.
+
+def _legacy_buggy_dispersion(x_px):
+    """
+    What dispersion_nm_per_px used to return: a*exp(b dx).
+
+    This assumes the parameterisation lam = lam0 + (a/b)(exp(b dx) - 1), in
+    which R0 genuinely IS the local dispersion. pixel_to_nm implements a
+    different one, so this was wrong by a factor of 2.83 - the original bug.
+    """
+    a = float(sc.R0_NM_PER_PX)
+    b = float(sc.R1_NM_PER_PX_PER_NM)
+    x = np.asarray(x_px, dtype=float)
+    return a * np.exp(b * (x - float(sc.PIXEL_CENTER_REF)))
+
+
 def _true_dispersion(x_px):
     """
-    d(lambda)/d(pixel) obtained by differentiating pixel_to_nm ANALYTICALLY.
+    d(lambda)/d(pixel) by differentiating pixel_to_nm ANALYTICALLY.
 
     pixel_to_nm is  lam = -a/b + (lam0 + a/b) exp(b (x-x0))
-    so              dlam/dx = (lam0 + a/b) * b * exp(b (x-x0)) = (lam0*b + a) exp(...)
+    so              dlam/dx = (lam0*b + a) exp(b (x-x0))
 
-    Note this is NOT what sc.dispersion_nm_per_px returns; comparing the two is
-    the substance of CHECK 1.
+    This was the corrected closed form. It has since been removed from
+    production too: differencing pixel_to_nm needs no derivative at all, and
+    leaves nothing that can drift out of sync with the instrument model.
     """
     a = float(sc.R0_NM_PER_PX)
     b = float(sc.R1_NM_PER_PX_PER_NM)
@@ -183,37 +204,44 @@ def check1(exp_i):
     print("    -> separation is robust to profile choice, so it is a clean "
           "ruler")
 
-    # -- the two competing dispersion values -------------------------------
+    # -- production mechanism vs the historical buggy one -------------------
     sep_via_pixel_to_nm = float(sc.pixel_to_nm(c1) - sc.pixel_to_nm(c0))
-    disp_used = float(sc.dispersion_nm_per_px(mid))
-    sep_via_disp_fn = sep_px * disp_used
+    # the width-conversion path actually used by the pipeline today
+    sep_via_width_fn = 2.0 * float(sc.width_px_to_nm(sep_px / 2.0, mid))
+    disp_legacy = float(_legacy_buggy_dispersion(mid))
+    sep_via_disp_fn = sep_px * disp_legacy
     disp_empirical = NIST_SEP_NM / sep_px
     disp_analytic = float(_true_dispersion(mid))
 
     print(f"\n  Separation implied by each route:")
     print(f"    a) pixel_to_nm(c1) - pixel_to_nm(c0)      = "
           f"{sep_via_pixel_to_nm:.4f} nm")
-    print(f"    b) sep_px * dispersion_nm_per_px(mid)     = "
+    print(f"    b) sc.width_px_to_nm (production today)   = "
+          f"{sep_via_width_fn:.4f} nm")
+    print(f"    c) sep_px * OLD BUGGY dispersion          = "
           f"{sep_via_disp_fn:.4f} nm")
     print(f"    NIST truth                                = "
           f"{NIST_SEP_NM:.4f} nm")
     err_a = 100 * (sep_via_pixel_to_nm / NIST_SEP_NM - 1)
+    err_w = 100 * (sep_via_width_fn / NIST_SEP_NM - 1)
     err_b = 100 * (sep_via_disp_fn / NIST_SEP_NM - 1)
     print(f"\n    route (a) error = {err_a:+.2f} %      <- wavelength axis")
-    print(f"    route (b) error = {err_b:+.2f} %      <- what every WIDTH uses")
+    print(f"    route (b) error = {err_w:+.2f} %      <- widths, current code")
+    print(f"    route (c) error = {err_b:+.2f} %      <- widths, before the fix")
 
     print(f"\n  Local dispersion at px {mid:.0f}:")
     print(f"    required by NIST         = {disp_empirical:.6e} nm/px")
     print(f"    d/dx of pixel_to_nm      = {disp_analytic:.6e} nm/px")
-    print(f"    dispersion_nm_per_px()   = {disp_used:.6e} nm/px")
-    factor = disp_used / disp_empirical
-    print(f"\n    dispersion_nm_per_px is too LARGE by a factor "
-          f"{factor:.3f}")
+    print(f"    OLD dispersion_nm_per_px = {disp_legacy:.6e} nm/px  (removed)")
+    factor = disp_legacy / disp_empirical
+    print(f"\n    the old closed form was too LARGE by a factor {factor:.3f}")
+    print(f"    it no longer exists: widths are differenced from pixel_to_nm,")
+    print(f"    so there is no second implementation left to drift.")
 
     print("\n  Diagnosis:")
     print("    pixel_to_nm implements  lam = -a/b + (lam0 + a/b) exp(b (x-x0)),")
     print("    whose derivative at x0 is (lam0*b + a), NOT a. But")
-    print("    dispersion_nm_per_px returns a*exp(...), i.e. it assumes the")
+    print("    the old dispersion_nm_per_px returned a*exp(...), assuming the")
     print("    other common parameterisation lam = lam0 + (a/b)(exp(b dx) - 1).")
     print("    The doublet separation shows the wavelength AXIS is right and")
     print("    the dispersion FUNCTION is wrong: R0 is not the local dispersion")
@@ -238,8 +266,8 @@ def check1(exp_i):
     print("    NOTE: k is within a per-cent of 1, i.e. the wavelength axis needs")
     print("    almost no correction. Rescaling R0 is the WRONG knob - it would")
     print("    mis-set the axis to compensate for a bug in the derivative.")
-    print(f"    The fix is to make dispersion_nm_per_px return "
-          f"(lam0*b + a)*exp(b dx).")
+    print("    That function has since been DELETED: widths are converted by")
+    print("    differencing pixel_to_nm, so no second implementation remains.")
 
     print(f"\n  Propagation of the {factor:.3f}x width correction "
           f"(widths are currently OVERSTATED):")
@@ -249,8 +277,8 @@ def check1(exp_i):
           f"{factor ** 1.471:.3f}")
 
     sig_inst = sc.SIGMA_INST_PX
-    fw_now = 2.355 * sig_inst * disp_used
-    fw_fix = 2.355 * sig_inst * disp_empirical
+    fw_now = 2.355 * sig_inst * disp_legacy      # what the bug produced
+    fw_fix = 2.355 * sig_inst * disp_empirical   # NIST-anchored truth
     print(f"\n  Effect on the headline instrumental-width gap:")
     print(f"    sigma_inst = {sig_inst:.3f} px")
     print(f"    FWHM as currently computed = {fw_now:.4f} nm = "
@@ -263,7 +291,7 @@ def check1(exp_i):
            f"width dispersion {factor:.2f}x too large",
            f"{NIST_SEP_NM:.4f} nm separation", verdict)
     return dict(sep_px=sep_px, factor=factor, disp_empirical=disp_empirical,
-                disp_used=disp_used, c0=c0, c1=c1, k=k,
+                disp_used=disp_legacy, c0=c0, c1=c1, k=k,
                 fw_now=fw_now, fw_fix=fw_fix)
 
 
@@ -366,7 +394,8 @@ def check2(exp_i, disp_nm_px):
         cents = np.array(cents)
         sigs = np.array(sigs)
         drift_px = float(np.max(cents) - np.min(cents))
-        drift_nm = drift_px * disp_nm_px
+        cen_ref = sc.nm_to_pixel(NIST_C1_NM)
+        drift_nm = 2.0 * float(sc.width_px_to_nm(drift_px / 2.0, cen_ref))
         v_spread = sc.C_KM_S * drift_nm / NIST_C1_NM
 
         # the 4-row average the pipeline actually uses
@@ -506,19 +535,25 @@ def check4(exp_i, disp_nm_px, sig_by_frame, no_plot):
     # centroid over the quiet late frames as the zero point.
     ha_zero = float(np.median([ha_raw[f] for f in FLOOR_FRAMES]))
     for i, f in enumerate(frames):
-        v_c = sc.C_KM_S * (shifts[i] * disp_nm_px) / NIST_C1_NM
-        dpx = ha_raw[f] - ha_zero
-        v_h = sc.C_KM_S * (dpx * float(sc.dispersion_nm_per_px(ha_raw[f]))
-                           * (disp_nm_px / float(sc.dispersion_nm_per_px(750.0)))
-                           ) / sc.LAMBDA_HA_NM
+        # Both of these are DISPLACEMENTS between two pixel positions, so they
+        # are exact differences of pixel_to_nm - no dispersion value needed.
+        cen_c1 = sc.nm_to_pixel(NIST_C1_NM)
+        v_c = sc.C_KM_S * float(sc.pixel_to_nm(cen_c1 + shifts[i])
+                                - sc.pixel_to_nm(cen_c1)) / NIST_C1_NM
+        v_h = sc.C_KM_S * float(sc.pixel_to_nm(ha_raw[f])
+                                - sc.pixel_to_nm(ha_zero)) / sc.LAMBDA_HA_NM
         ha_v.append(v_h)
-        print(f"  {f:5d} {shifts[i]:10.3f} {shifts[i] * disp_nm_px:10.4f} "
+        shift_nm = float(sc.pixel_to_nm(cen_c1 + shifts[i])
+                         - sc.pixel_to_nm(cen_c1))
+        print(f"  {f:5d} {shifts[i]:10.3f} {shift_nm:10.4f} "
               f"{v_c:10.2f} {sigmas[i]:10.3f} {nes[i]:12.3e} {v_h:11.2f}")
 
     shifts = np.array(shifts)
     sigmas = np.array(sigmas)
     ha_v = np.array(ha_v)
-    v_c_all = sc.C_KM_S * (shifts * disp_nm_px) / NIST_C1_NM
+    _cen_c1 = sc.nm_to_pixel(NIST_C1_NM)
+    v_c_all = sc.C_KM_S * (sc.pixel_to_nm(_cen_c1 + shifts)
+                           - sc.pixel_to_nm(_cen_c1)) / NIST_C1_NM
 
     r_ss = float(np.corrcoef(shifts, sigmas)[0, 1])
     r_ch = float(np.corrcoef(v_c_all, ha_v)[0, 1])
@@ -550,7 +585,8 @@ def check4(exp_i, disp_nm_px, sig_by_frame, no_plot):
     exc_v = []
     for s in sigmas:
         e = np.sqrt(max(s ** 2 - sig_inst_l ** 2, 0.0))
-        exc_v.append(sc.C_KM_S * (e * disp_nm_px) / NIST_C1_NM)
+        exc_v.append(sc.C_KM_S * float(sc.width_px_to_nm(e, _cen_c1))
+                     / NIST_C1_NM)
     exc_v = np.array(exc_v)
     v_peak = float(np.max(np.abs(v_c_all[keep])))
     e_peak = float(np.max(exc_v))
@@ -942,7 +978,7 @@ def main():
 
     print("  RANKED BY EVIDENCE:\n")
     print(f"  1. WRONG DISPERSION - CONFIRMED. Largest single term.")
-    print(f"     dispersion_nm_per_px disagrees with the analytic derivative of")
+    print(f"     the old dispersion_nm_per_px disagreed with the derivative of")
     print(f"     pixel_to_nm by {c1['factor']:.2f}x. The C II doublet separation")
     print(f"     is fixed atomic physics and settles which is right: the")
     print(f"     wavelength axis reproduces it to {0.36:.2f}%, the dispersion")

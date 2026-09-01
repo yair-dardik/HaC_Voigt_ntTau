@@ -91,8 +91,10 @@ def fit_ha(x, profile, T_eV=0.0, sigma_inst_px=None):
         "n_e": n_e,
         "n_e_err": n_e_err,
         "gamma_px": gamma,
-        "gamma_nm": gamma * sc.dispersion_nm_per_px(cen),
-        "stark_fwhm_nm": 2 * gamma * sc.dispersion_nm_per_px(cen),
+        # Widths are differenced about the fitted centre, not multiplied by a
+        # dispersion value - see spectro_core.width_px_to_nm.
+        "gamma_nm": float(sc.width_px_to_nm(gamma, cen)),
+        "stark_fwhm_nm": 2 * float(sc.width_px_to_nm(gamma, cen)),
         "center_px": cen,
         "center_nm": float(sc.pixel_to_nm(cen)),
         "sigma_fixed_px": sigma_fixed,

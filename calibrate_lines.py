@@ -126,9 +126,12 @@ def main():
               f"{result.params[f'amp{i}'].value:9.0f}   "
               f"{'n/a' if err is None else f'{err:.3f}'}")
 
-    disp = sc.dispersion_nm_per_px(800.0)
+    # Widths are converted by differencing pixel_to_nm about the C group's own
+    # centre, never by multiplying a dispersion value.
+    cen_group = float(np.mean([ln["pixel"] for ln in lines]))
+    _nm = lambda w: float(sc.width_px_to_nm(w, cen_group))
     print(f"\n  shared sigma = {sigma_stack:.3f} px "
-          f"= {sigma_stack * disp:.4f} nm  (FWHM {2.355 * sigma_stack * disp:.4f} nm)")
+          f"= {_nm(sigma_stack):.4f} nm  (FWHM {2.355 * _nm(sigma_stack):.4f} nm)")
     print(f"  reduced chi-square = {result.redchi:.3f}")
 
     # --- instrumental width floor from the late frames ---
@@ -142,20 +145,19 @@ def main():
         sigmas[frame_i] = sigma
         mark = "  <- floor window" if frame_i in FLOOR_FRAMES else ""
         print(f"  frame {frame_i:2d}  sigma = {sigma:7.3f} px  "
-              f"FWHM = {2.355 * sigma * disp:.4f} nm   "
+              f"FWHM = {2.355 * _nm(sigma):.4f} nm   "
               f"chi2r = {res.redchi:5.2f}{mark}")
 
     floor_frame = min(FLOOR_FRAMES, key=lambda f: sigmas[f])
     sigma_inst = sigmas[floor_frame]
     print(f"\n  instrumental sigma (floor) = {sigma_inst:.3f} px "
-          f"= {sigma_inst * disp:.4f} nm  (FWHM {2.355 * sigma_inst * disp:.4f} nm), "
+          f"= {_nm(sigma_inst):.4f} nm  (FWHM {2.355 * _nm(sigma_inst):.4f} nm), "
           f"from frame {floor_frame}")
     # The old assumption inst_fwhm_Ha = 0.05 nm is an H-alpha number, so convert
-    # it at the H-alpha pixel with the CORRECTED dispersion. Under the old buggy
-    # dispersion this came out 1.63 px and the ratio looked like 4.2x; both were
-    # artefacts of that bug.
-    disp_ha = float(sc.dispersion_nm_per_px(sc.nm_to_pixel(sc.LAMBDA_HA_NM)))
-    old_sigma_px = 0.05 / (2.35482 * disp_ha)
+    # it anchored at the H-alpha line centre. Under the old buggy dispersion
+    # this came out 1.63 px and the ratio looked like 4.2x; both were artefacts
+    # of that bug.
+    old_sigma_px = sc.width_nm_to_px(0.05 / 2.35482, sc.LAMBDA_HA_NM)
     print(f"  the old constant was inst_sigma = {old_sigma_px:.3f} px "
           f"-> too small by {sigma_inst / old_sigma_px:.2f}x")
     print(f"  (under the pre-fix dispersion this printed 1.627 px and 4.2x;")
