@@ -23,23 +23,6 @@ LAMBDA_CENTER_REF_NM = 658.0
 R0_NM_PER_PX = 1.304735e-02
 R1_NM_PER_PX_PER_NM = -1.285110e-05
 
-# --- Local dispersion: the TRUE derivative of pixel_to_nm --------------------
-# pixel_to_nm implements  lam = -a/b + (lam0 + a/b) exp(b dx),
-# so                      dlam/dx = (lam0*b + a) exp(b dx) = 4.5913e-3 nm/px,
-# NOT a = R0_NM_PER_PX = 1.3047e-2. This script used to multiply pixel widths
-# by R0 directly, which overstated EVERY width by 2.83x - and therefore
-# velocities by 2.83x, T by 8.02x (disp^2) and n_e by 4.62x (disp^1.471).
-# The C II doublet separation (fixed atomic physics, 0.48279 nm) confirms the
-# wavelength axis is right and only this derivative was wrong.
-SLOPE0_NM_PER_PX = LAMBDA_CENTER_REF_NM * R1_NM_PER_PX_PER_NM + R0_NM_PER_PX
-
-
-def dispersion_nm_per_px(x_px):
-    """Local d(lambda)/d(pixel). Use this for WIDTHS, never bare R0."""
-    x = np.asarray(x_px, dtype=float)
-    return SLOPE0_NM_PER_PX * np.exp(R1_NM_PER_PX_PER_NM * (x - PIXEL_CENTER_REF))
-
-
 # --- Physics & Fitting Constants ---
 lambda_Ha = 656.28    # H-alpha wavelength in nm
 # NIST critically-evaluated air wavelengths (Kramida & Haris 2022). The old
@@ -49,15 +32,8 @@ lambda_Ha = 656.28    # H-alpha wavelength in nm
 lambda_C1 = 657.80482  # C II 3s 2S(1/2) - 3p 2P*(3/2), upper level g = 4
 lambda_C2 = 658.28761  # C II 3s 2S(1/2) - 3p 2P*(1/2), upper level g = 2
 inst_fwhm_Ha = 0.05   # Instrumental FWHM for H-alpha in nm (ASSUMED, not measured)
-# Under the corrected dispersion this is 4.60 px, not the 1.63 px the old
-# R0-based conversion gave. So the assumption was ~1.48x too small, not 4.2x.
-_HA_PX = PIXEL_CENTER_REF + np.log(
-    (lambda_Ha + R0_NM_PER_PX / R1_NM_PER_PX_PER_NM)
-    / (LAMBDA_CENTER_REF_NM + R0_NM_PER_PX / R1_NM_PER_PX_PER_NM)
-) / R1_NM_PER_PX_PER_NM
-inst_sigma_Ha = inst_fwhm_Ha / (2.35482 * float(dispersion_nm_per_px(_HA_PX)))
-inst_sigma_C1 = inst_sigma_Ha    # for now until i ask about it, dont want to bound the fit
-inst_sigma_C2 = inst_sigma_Ha   # for now until i ask about it, dont want to bound the fit
+# inst_sigma_Ha / _C1 / _C2 are derived from inst_fwhm_Ha further down, once
+# width_nm_to_px exists (it needs nm_to_pixel, defined below).
 k_ev = 11600          # 11600 Kelvin = 1 eV
 mH = 1                # Hydrogen mass in amu
 mC = 12               # Carbon mass in amu
@@ -115,6 +91,38 @@ def nm_to_pixel(lam_nm):
     const_term = -a / b
     amp = lam0 + a / b
     return float(x0 + np.log((lam_nm - const_term) / amp) / b)
+
+
+# --- Width conversion -------------------------------------------------------
+# A pixel WIDTH is not a pixel POSITION, so it cannot be passed to pixel_to_nm
+# directly. Convert widths by DIFFERENCING pixel_to_nm around the feature's own
+# fitted centre. There used to be a dispersion_nm_per_px() here holding a
+# closed-form derivative, and widths were converted by multiplying by it; that
+# was a second, independent implementation of the wavelength scale and it
+# silently disagreed with pixel_to_nm by 2.83x. These helpers hold no formula
+# of their own, so they cannot drift out of sync with the instrument model.
+
+def width_px_to_nm(width_px, center_px):
+    """WIDTH in px -> nm, centred on the line so neither side is privileged."""
+    c = np.asarray(center_px, dtype=float)
+    w = np.asarray(width_px, dtype=float)
+    return float((pixel_to_nm(c + w) - pixel_to_nm(c - w)) / 2.0)
+
+
+def width_nm_to_px(width_nm, center_nm):
+    """WIDTH in nm -> px, anchored at the line centre (no pixel centre yet)."""
+    lam = float(center_nm)
+    return nm_to_pixel(lam + float(width_nm)) - nm_to_pixel(lam)
+
+
+# Derived instrumental widths. Defined here rather than beside inst_fwhm_Ha
+# because converting an assumed nm width into pixels now goes through
+# width_nm_to_px, which needs nm_to_pixel.
+# Under the corrected conversion this is 4.60 px, not the 1.63 px the old
+# R0-based multiplication gave: the assumption was ~1.48x too small, not 4.2x.
+inst_sigma_Ha = width_nm_to_px(inst_fwhm_Ha / 2.35482, lambda_Ha)
+inst_sigma_C1 = inst_sigma_Ha    # for now until i ask about it, dont want to bound the fit
+inst_sigma_C2 = inst_sigma_Ha   # for now until i ask about it, dont want to bound the fit
 
 
 def load_full_profile(tiff_path, y_range, x_min=0, x_max=1601):
@@ -293,15 +301,15 @@ def extract_nt_from_frame(exp_i, frame_i, do_plot=False):
         # --- 4. Plasma Diagnostics ---
         
         # H-alpha Density Calculation
-        gam_Ha_nm = gam_Ha * float(dispersion_nm_per_px(cen_Ha))
+        gam_Ha_nm = width_px_to_nm(gam_Ha, cen_Ha)
         stark_fwhm_nm = 2 * gam_Ha_nm
         if stark_fwhm_nm > 0:
             n_e_cm3 = 10**17 * (stark_fwhm_nm / 1.098)**1.471
             print(f"Hα Electron Density (n_e):  {n_e_cm3:.2e} cm^-3")
 
         # C1 Temperature Calculation
-        sig_C1_nm = sig_C1 * float(dispersion_nm_per_px(cen_C1))
-        inst_sigma_C1_nm = inst_sigma_C1 * float(dispersion_nm_per_px(cen_C1))
+        sig_C1_nm = width_px_to_nm(sig_C1, cen_C1)
+        inst_sigma_C1_nm = width_px_to_nm(inst_sigma_C1, cen_C1)
         if sig_C1_nm > inst_sigma_C1_nm:
             sig_th_C1_nm = math.sqrt(sig_C1_nm**2 - inst_sigma_C1_nm**2)
             mc2_C_eV = 931.49e6 * mC
@@ -309,8 +317,8 @@ def extract_nt_from_frame(exp_i, frame_i, do_plot=False):
             print(f"C1 Temperature (T):         {T_C1_eV:.2f} eV")
 
         # C2 Temperature Calculation
-        sig_C2_nm = sig_C2 * float(dispersion_nm_per_px(cen_C2))
-        inst_sigma_C2_nm = inst_sigma_C2 * float(dispersion_nm_per_px(cen_C2))
+        sig_C2_nm = width_px_to_nm(sig_C2, cen_C2)
+        inst_sigma_C2_nm = width_px_to_nm(inst_sigma_C2, cen_C2)
         if sig_C2_nm > inst_sigma_C2_nm:
             sig_th_C2_nm = math.sqrt(sig_C2_nm**2 - inst_sigma_C2_nm**2)
             mc2_C_eV = 931.49e6 * mC
