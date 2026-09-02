@@ -64,17 +64,19 @@ def gaussian(x, amplitude, center, sigma, offset):
 def combined_model(x,
                    amp_Ha, cen_Ha, sig_Ha, gam_Ha,
                    amp_C1, cen_C1, sig_C1, gam_C1,
-                   amp_C2a, cen_C2a, sig_C2a, gam_C2a,
-                   amp_C2b, cen_C2b, sig_C2b, gam_C2b,
+                   amp_C2, cen_C2, sig_C2, gam_C2,
                    offset):
     """
-    Sum of 4 Voigt profiles (Ha, C1, and 2 for C2a/b) + global offset.
+    Sum of 3 Voigt profiles (Ha, C1, C2) + global offset.
+
+    C2 is a SINGLE Voigt, matching C1. It used to be split into C2a/C2b and
+    the temperature was then taken from whichever of the two came out larger,
+    which made T_C1 and T_C2 measurements of different things.
     """
     y_Ha = voigt(x, amp_Ha, cen_Ha, sig_Ha, gam_Ha, 0)
     y_C1 = voigt(x, amp_C1, cen_C1, sig_C1, gam_C1, 0)
-    y_C2a = voigt(x, amp_C2a, cen_C2a, sig_C2a, gam_C2a, 0)
-    y_C2b = voigt(x, amp_C2b, cen_C2b, sig_C2b, gam_C2b, 0)
-    return y_Ha + y_C1 + y_C2a + y_C2b + offset
+    y_C2 = voigt(x, amp_C2, cen_C2, sig_C2, gam_C2, 0)
+    return y_Ha + y_C1 + y_C2 + offset
 
 
 # --- Utility Functions ---
@@ -267,25 +269,24 @@ def extract_nt_from_frame(exp_i, frame_i, do_plot=False):
     p0 = [
         A_Ha, px_Ha, 3.0, 3.0,          # Ha (Voigt)
         A_C1, px_C1, 3.0, 3.0,          # C1 (Voigt)
-        A_C2*0.6, px_C2 - 1.5, 2.0, 2.0, # C2a (Voigt - Shifted slightly left)
-        A_C2*0.4, px_C2 + 1.5, 2.0, 2.0, # C2b (Voigt - Shifted slightly right)
+        A_C2, px_C2, 3.0, 3.0,          # C2 (Voigt) - single, same as C1
         0.0                             # global offset
     ]
 
-    # Strict bounds to prevent lines from swapping places
+    # Strict bounds to prevent lines from swapping places. C2 now gets the
+    # same +/-15 px window as C1 (it was +/-20 to let the old C2a/C2b pair
+    # separate; a single component does not need that freedom).
     bounds_lower = [
         0, px_Ha - 30, 0, 0,
         0, px_C1 - 15, 0, 0,
-        0, px_C2 - 20, 0, 0,
-        0, px_C2 - 20, 0, 0,
+        0, px_C2 - 15, 0, 0,
         -np.max(prof_fit)
     ]
 
     bounds_upper = [
         np.inf, px_Ha + 30, 100, 100,
         np.inf, px_C1 + 15, 100, 100,
-        np.inf, px_C2 + 20, 100, 100,
-        np.inf, px_C2 + 20, 100, 100,
+        np.inf, px_C2 + 15, 100, 100,
         np.max(prof_fit)
     ]
 
@@ -296,11 +297,10 @@ def extract_nt_from_frame(exp_i, frame_i, do_plot=False):
         # --- Perform the Global Fit ---
         popt, _ = curve_fit(combined_model, x_px_fit, prof_fit, p0=p0, bounds=(bounds_lower, bounds_upper))
         
-        # Unpack the 17 parameters
+        # Unpack the 13 parameters
         (amp_Ha, cen_Ha, sig_Ha, gam_Ha,
          amp_C1, cen_C1, sig_C1, gam_C1,
-         amp_C2a, cen_C2a, sig_C2a, gam_C2a,
-         amp_C2b, cen_C2b, sig_C2b, gam_C2b,
+         amp_C2, cen_C2, sig_C2, gam_C2,
          offset) = popt
 
         # --- Plasma Diagnostics ---
@@ -321,20 +321,16 @@ def extract_nt_from_frame(exp_i, frame_i, do_plot=False):
             T_C1_eV = (931.49e6 * mC) * (sig_th_C1_nm / lambda_C1)**2
             print(f"C1 Temperature (T):         {T_C1_eV:.2f} eV")
 
-        # C2 Temperature Calculation (Use the dominant peak of the doublet)
-        if amp_C2a > amp_C2b:
-            sig_C2_main = sig_C2a
-            cen_C2_main = cen_C2a
-        else:
-            sig_C2_main = sig_C2b
-            cen_C2_main = cen_C2b
-
-        sig_C2_nm = width_px_to_nm(sig_C2_main, cen_C2_main)
-        inst_sigma_C2_nm = width_px_to_nm(inst_sigma_C2, cen_C2_main)
+        # C2 Temperature Calculation
+        # Single Voigt now, so this is the same measurement as C1 above - no
+        # "pick the dominant peak" step, which previously made T_C1 and T_C2
+        # derived from differently-constructed quantities.
+        sig_C2_nm = width_px_to_nm(sig_C2, cen_C2)
+        inst_sigma_C2_nm = width_px_to_nm(inst_sigma_C2, cen_C2)
         if sig_C2_nm > inst_sigma_C2_nm:
             sig_th_C2_nm = math.sqrt(sig_C2_nm**2 - inst_sigma_C2_nm**2)
-            lambda_C2_fitted = pixel_to_nm(cen_C2_main) # Use precise fitted center
-            T_C2_eV = (931.49e6 * mC) * (sig_th_C2_nm / lambda_C2_fitted)**2 
+            lambda_C2_fitted = pixel_to_nm(cen_C2) # Use precise fitted center
+            T_C2_eV = (931.49e6 * mC) * (sig_th_C2_nm / lambda_C2_fitted)**2
             print(f"C2 Temperature (T):         {T_C2_eV:.2f} eV")
 
     except RuntimeError as e:
@@ -347,8 +343,7 @@ def extract_nt_from_frame(exp_i, frame_i, do_plot=False):
         fit_total = combined_model(x_px_fit, *popt)
         fit_Ha  = voigt(x_px_fit, amp_Ha, cen_Ha, sig_Ha, gam_Ha, offset)
         fit_C1  = voigt(x_px_fit, amp_C1, cen_C1, sig_C1, gam_C1, offset)
-        fit_C2a = voigt(x_px_fit, amp_C2a, cen_C2a, sig_C2a, gam_C2a, offset)
-        fit_C2b = voigt(x_px_fit, amp_C2b, cen_C2b, sig_C2b, gam_C2b, offset)
+        fit_C2  = voigt(x_px_fit, amp_C2, cen_C2, sig_C2, gam_C2, offset)
 
         plt.figure(figsize=(10, 6))
         plt.plot(x_nm_fit, prof_fit, label="Raw Data", color='lightgray', linewidth=2)
@@ -357,8 +352,7 @@ def extract_nt_from_frame(exp_i, frame_i, do_plot=False):
         # Plot individual components
         plt.plot(x_nm_fit, fit_Ha, 'r-', alpha=0.6, label="Hα (Voigt)")
         plt.plot(x_nm_fit, fit_C1, 'g-', alpha=0.6, label="C1 (Voigt)")
-        plt.plot(x_nm_fit, fit_C2a, 'b-', alpha=0.6, label="C2 Peak A (Voigt)")
-        plt.plot(x_nm_fit, fit_C2b, 'm-', alpha=0.6, label="C2 Peak B (Voigt)")
+        plt.plot(x_nm_fit, fit_C2, 'b-', alpha=0.6, label="C2 (Voigt)")
         
         plt.xlabel("Wavelength (nm)")
         plt.ylabel("Intensity [a.u.]")
