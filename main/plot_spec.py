@@ -1,4 +1,4 @@
-import HaC_ProEM_Yair as HaC
+import HaC_main as HaC
 import numpy as np
 import matplotlib.pyplot as plt
 import math
