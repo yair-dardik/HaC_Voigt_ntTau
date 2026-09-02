@@ -9,8 +9,7 @@ update: i know use the same as H_alpha, it makes very little difference but Shar
 5. i get t from c1 and c2 do i average?
 update: force it to be same in the fit
 
-
-things need checking:
+ive tried many combinations
 
 are the C really voight - seems stark is
 minor like sharon said
@@ -18,7 +17,8 @@ minor like sharon said
 does mnist sopurt my mixed peaks hypo? seems not, and the waveengths
 are shifted a bit
 
-seems lik theres a pronlem with pixel_to_nm
+than went t clades help, made many files and tests
+seems like theres a pronlem with pixel_to_nm
 
 after suppos fix c1 seems more relible than c2
 which might have a non c line in it
@@ -34,9 +34,19 @@ need to ask if any more materials
   self-absorption can only push that ratio down not up, so something else is emitting there
    — likely Cu II or Fe I depending on materials. One sentence from her settles it."
 
-C2 flat shape and ratio to C1 makes mee think of self absorption
+C2 flat shape and ratio to C1 makes mee think of self absorption - self reversal
+probably not it because c1 isnt affected
 
-Two things I'd still check when you have a moment, both from earlier and neither addressed by this pass:
+B is around 1 Tesla, check for Zeeman and add to code
 
-The T ≤ 0.2 eV global limit. If it's a min over frames and σ_inst is defined as min(sigmas[FLOOR_FRAMES]), the minimizing frame has excess ≡ 0 by construction, and that number is a tautology rather than a bound.
-Frame 18's significance halving while both neighbours rose — likely a fit that found a different local minimum, not weaker data.
+4 שלבים- 
+מבוא, שיטה, תוצאות, דיון
+מבוא כזה על ההיתוך הסטלרטור וכ'
+שיטה של ספקטרוסקופיה ממש מזה פיק מקדם איינשטיין וכל ההרחבות השונות
+תוצאות כזה גרפים יפים של פריימים וגם הגרף החשוב המטורף
+דיון כל הסיבות שחשבתי עליהן, ממש חישובים של דברים וכו'
+
+only files to actually submit are HaC_OroEM_Yair and plot_spec
+
+surprisingly the H_alpha fit has high chi 
+it dos make sense when seeing the fit
