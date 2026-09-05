@@ -16,7 +16,32 @@ try:
 except Exception:
     pass
 
-
+### --- User-Configurable Parameters ---
+FRAME_TO_PLOT = 13
+# Name of the experiment folder under C3_BASE_DIR, which must itself contain a
+# ProEM/ subfolder holding the .tif frames (the same layout as before - only
+# the folder's NAME is configurable, not its internal structure). Leave empty
+# to fall back to the old convention of "C<exp_i>" (e.g. exp_i=559 -> "C559").
+EXPERIMENT_DIR_NAME = ""
+# --- C3 data root ---
+# Set C3_BASE_DIR explicitly to pin the data location. Left empty, it is
+# whichever of {cwd, this script's own folder} actually contains a
+# <EXPERIMENT_DIR_NAME>/ProEM tree (or a "C*"/ProEM tree, if
+# EXPERIMENT_DIR_NAME is left on its own default), checked in that order. The
+# script's own folder is included (not just cwd) so this still finds the data
+# when run from elsewhere, or imported by another script (plot_spec.py) run
+# from elsewhere - it only requires the experiment folder (e.g. C559/, or
+# whatever EXPERIMENT_DIR_NAME names) to sit next to this file.
+C3_BASE_DIR = r""
+if not C3_BASE_DIR:
+    _here = os.path.dirname(os.path.abspath(__file__))
+    _dir_glob = EXPERIMENT_DIR_NAME or "C*"
+    for _cand in (os.getcwd(), _here):
+        if glob.glob(os.path.join(_cand, _dir_glob, "ProEM")):
+            C3_BASE_DIR = _cand
+            break
+    else:
+        C3_BASE_DIR = os.getcwd()
 # --- Calibration constants (pixel <-> wavelength) ---
 PIXEL_CENTER_REF = 800.0
 LAMBDA_CENTER_REF_NM = 658.0
@@ -51,9 +76,7 @@ DO_BASELINE_CORRECT = True   # set False to skip baseline subtraction entirely
 BASELINE_POLY_DEGREE = 1
 BASELINE_ENFORCE_NONNEGATIVE = True
 
-# --- C3 data root ---
-C3_BASE_DIR = r""
-C3_BASE_DIR = C3_BASE_DIR if C3_BASE_DIR else os.getcwd()
+
 
 # --- Mathematical Fitting Functions ---
 def voigt(x, amplitude, center, sigma, gamma, offset):
@@ -217,11 +240,15 @@ def apply_baseline_correction(x_px, profile):
 
     return corrected_profile, coeff, lift
 
-def prompt_c3_tiff_path(exp_i=None, frame_i=None):
-    """Ask for an experiment number and frame number, return the matching C3 ProEM TIFF path."""
-        
-
-    proem_dir = os.path.join(C3_BASE_DIR, f"C{exp_i}", "ProEM")
+def prompt_c3_tiff_path(exp_i=None, frame_i=None, exp_dir_name=None):
+    """
+    Ask for an experiment number and frame number, return the matching C3
+    ProEM TIFF path. exp_dir_name names the experiment folder directly
+    (falls back to the module-level EXPERIMENT_DIR_NAME, then to "C<exp_i>");
+    that folder must still contain a ProEM/ subfolder with the .tif frames.
+    """
+    dir_name = exp_dir_name or EXPERIMENT_DIR_NAME or f"C{exp_i}"
+    proem_dir = os.path.join(C3_BASE_DIR, dir_name, "ProEM")
     frame_token = f"{frame_i:02d}"
     candidates = []
     candidates += sorted(glob.glob(os.path.join(proem_dir, f"*-Frame-{frame_token}.tif")))
@@ -245,8 +272,9 @@ def prompt_c3_tiff_path(exp_i=None, frame_i=None):
 #########################################################################
 
 
-def extract_nt_from_frame(exp_i, frame_i, do_plot=False):
-    tiff_path, exp_number, frame_number = prompt_c3_tiff_path(exp_i,frame_i)
+def extract_nt_from_frame(exp_i, frame_i, do_plot=False, exp_dir_name=None):
+    tiff_path, exp_number, frame_number = prompt_c3_tiff_path(exp_i, frame_i,
+                                                               exp_dir_name)
     print(f"\n=====================================")
     print(f"Loading C{exp_number} Frame {frame_number}")
 
@@ -366,7 +394,7 @@ if __name__ == "__main__":
     
     for frame_i in range(first_frame, last_frame + 1):
         # You can test a single frame plot by changing this temporarily, e.g., if frame_i == 5: extract_nt_from_frame(exp_i, frame_i, do_plot=True)
-        if(frame_i == 13):  # plot only for frame 
+        if(frame_i == FRAME_TO_PLOT):  # plot only for frame 
             extract_nt_from_frame(exp_i, frame_i, do_plot=True)
         n[frame_i - first_frame], t1[frame_i - first_frame], t2[frame_i - first_frame] = extract_nt_from_frame(exp_i, frame_i, do_plot=False)
 

@@ -16,7 +16,9 @@ try:
         sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 except Exception:
     pass
-
+#----------------------------
+#USER-CONFIGURABLE PARAMETERS
+#----------------------------
 
 # ============================================================================
 # ZEEMAN JOINT-FIT ANALYSIS: run settings (edit these to change a run)
@@ -31,7 +33,14 @@ ZEEMAN_LAST_FRAME = 25
 
 # B search range for the Zeeman field fit, in tesla.
 B_MIN_TESLA = 0.0
-B_MAX_TESLA = 2.0
+B_MAX_TESLA = 2.5
+
+# The Zeeman pattern is symmetric, so to first order in B the blend is
+# unchanged: d(model)/dB is exactly 0 at B = 0 and the response is quadratic.
+# A gradient-based fit seeded near zero therefore cannot climb out of B = 0
+# even when a much better minimum exists elsewhere. Every B fit below is
+# started from this ladder and the best chi2 kept.
+B_SEEDS = (1.2, 1.6, 2.0, 2.2, 2.4)
 
 # Which width model(s) to run: "both" fits independent sigma_C1/sigma_C2 AND
 # one shared sigma, then prints the head-to-head comparison; "independent" or
@@ -44,8 +53,36 @@ ZEEMAN_WIDTH_MODEL = "both"
 ZEEMAN_PLOT_FRAME = 13
 
 # Same ROI half-width the existing single-Gaussian C1/C2 fits use.
+#everything outside that window is excluded before the model is fit.
 ZEEMAN_ROI_HALFWIDTH_NM = 0.2
 
+# Name of the experiment folder under C3_BASE_DIR, which must itself contain a
+# ProEM/ subfolder holding the .tif frames (the same layout as before - only
+# the folder's NAME is configurable, not its internal structure). Leave empty
+# to fall back to the old convention of "C<exp_i>" (e.g. exp_i=559 -> "C559").
+EXPERIMENT_DIR_NAME = ""
+
+# --- C3 data root ---
+# Set C3_BASE_DIR explicitly to pin the data location. Left empty, it is
+# whichever of {cwd, this file's own folder} actually contains a
+# <EXPERIMENT_DIR_NAME>/ProEM tree (or a "C*"/ProEM tree, if
+# EXPERIMENT_DIR_NAME is left on its own default), checked in that order.
+# This makes no assumption about this file's own location relative to the
+# data - it only requires the experiment folder (e.g. C559/, or whatever
+# EXPERIMENT_DIR_NAME names) to sit next to this script, wherever that is.
+C3_BASE_DIR = r""
+if not C3_BASE_DIR:
+    _here = os.path.dirname(os.path.abspath(__file__))
+    _dir_glob = EXPERIMENT_DIR_NAME or "C*"
+    for _cand in (os.getcwd(), _here):
+        if glob.glob(os.path.join(_cand, _dir_glob, "ProEM")):
+            C3_BASE_DIR = _cand
+            break
+    else:
+        C3_BASE_DIR = os.getcwd()
+#----------------------------
+#END OF USER-CONFIGURABLE PARAMETERS
+#----------------------------
 
 # --- Calibration constants (pixel <-> wavelength) ---
 PIXEL_CENTER_REF = 800.0
@@ -81,9 +118,7 @@ DO_BASELINE_CORRECT = True   # set False to skip baseline subtraction entirely
 BASELINE_POLY_DEGREE = 1
 BASELINE_ENFORCE_NONNEGATIVE = True
 
-# --- C3 data root ---
-C3_BASE_DIR = r""
-C3_BASE_DIR = C3_BASE_DIR if C3_BASE_DIR else os.getcwd()
+
 
 # --- Mathematical Fitting Functions ---
 def voigt(x, amplitude, center, sigma, gamma, offset):
@@ -247,11 +282,15 @@ def apply_baseline_correction(x_px, profile):
 
     return corrected_profile, coeff, lift
 
-def prompt_c3_tiff_path(exp_i=None, frame_i=None):
-    """Ask for an experiment number and frame number, return the matching C3 ProEM TIFF path."""
-        
-
-    proem_dir = os.path.join(C3_BASE_DIR, f"C{exp_i}", "ProEM")
+def prompt_c3_tiff_path(exp_i=None, frame_i=None, exp_dir_name=None):
+    """
+    Ask for an experiment number and frame number, return the matching C3
+    ProEM TIFF path. exp_dir_name names the experiment folder directly
+    (falls back to the module-level EXPERIMENT_DIR_NAME, then to "C<exp_i>");
+    that folder must still contain a ProEM/ subfolder with the .tif frames.
+    """
+    dir_name = exp_dir_name or EXPERIMENT_DIR_NAME or f"C{exp_i}"
+    proem_dir = os.path.join(C3_BASE_DIR, dir_name, "ProEM")
     frame_token = f"{frame_i:02d}"
     candidates = []
     candidates += sorted(glob.glob(os.path.join(proem_dir, f"*-Frame-{frame_token}.tif")))
@@ -275,8 +314,9 @@ def prompt_c3_tiff_path(exp_i=None, frame_i=None):
 #########################################################################
 
 
-def extract_nt_from_frame(exp_i, frame_i, do_plot=False):
-    tiff_path, exp_number, frame_number = prompt_c3_tiff_path(exp_i,frame_i)
+def extract_nt_from_frame(exp_i, frame_i, do_plot=False, exp_dir_name=None):
+    tiff_path, exp_number, frame_number = prompt_c3_tiff_path(exp_i, frame_i,
+                                                               exp_dir_name)
     print(f"\n=====================================")
     print(f"Loading C{exp_number} Frame {frame_number}")
 
@@ -480,7 +520,7 @@ def _robust_sigma(v):
     return float(1.4826 * np.median(np.abs(v - np.median(v)))) or 1.0
 
 
-def prepare_frame(exp_i, frame_i):
+def prepare_frame(exp_i, frame_i, exp_dir_name=None):
     """
     Load one frame, baseline-correct it, cut the two C II ROIs, and run the
     EXISTING single-Gaussian fits on each. Those existing fits serve three
@@ -492,7 +532,7 @@ def prepare_frame(exp_i, frame_i):
     bad frame drops out of the analysis instead of poisoning the global fit.
     """
     try:
-        tiff_path, _, _ = prompt_c3_tiff_path(exp_i, frame_i)
+        tiff_path, _, _ = prompt_c3_tiff_path(exp_i, frame_i, exp_dir_name)
     except TypeError:
         return None
 
@@ -519,21 +559,30 @@ def prepare_frame(exp_i, frame_i):
     noise = _robust_sigma(profile[edge])
 
     # --- existing pipeline fits, verbatim in form ---
+    # pcov is kept here only so the OLD temperatures can carry error bars too.
+    # curve_fit is called unweighted, exactly as the pipeline does it, so its
+    # pcov is already scaled by the fit's own residual variance; that is the
+    # same absolute_sigma=False convention used for the joint fit below.
     try:
         p0_C1 = [np.max(y1), x1[np.argmax(y1)], max(3.0, 1.5 * inst_sigma_C1), np.min(y1)]
         b_C1 = ([0, x1[0], inst_sigma_C1, 0], [np.inf, x1[-1], 100, np.max(y1)])
-        popt_C1, _ = curve_fit(gaussian, x1, y1, p0=p0_C1, bounds=b_C1)
+        popt_C1, pcov_C1 = curve_fit(gaussian, x1, y1, p0=p0_C1, bounds=b_C1)
         p0_C2 = [np.max(y2), x2[np.argmax(y2)], max(3.0, 1.5 * inst_sigma_C2), np.min(y2)]
         b_C2 = ([0, x2[0], inst_sigma_C2, 0], [np.inf, x2[-1], 100, np.max(y2)])
-        popt_C2, _ = curve_fit(gaussian, x2, y2, p0=p0_C2, bounds=b_C2)
+        popt_C2, pcov_C2 = curve_fit(gaussian, x2, y2, p0=p0_C2, bounds=b_C2)
     except (RuntimeError, ValueError):
         return None
+
+    def _perr(pcov):
+        d = np.diag(np.asarray(pcov, dtype=float))
+        return np.sqrt(np.clip(np.nan_to_num(d, nan=0.0, posinf=0.0), 0.0, np.inf))
 
     return {
         "frame": frame_i,
         "x1": x1, "y1": y1, "x2": x2, "y2": y2,
         "noise": noise,
         "old_C1": popt_C1, "old_C2": popt_C2,
+        "old_C1_err": _perr(pcov_C1), "old_C2_err": _perr(pcov_C2),
     }
 
 
@@ -545,6 +594,28 @@ def temperature_eV(sigma_px, center_px, lam_nm, inst_sigma_px):
         return 0.0
     sig_th_nm = math.sqrt(sig_nm ** 2 - inst_nm ** 2)
     return (931.49e6 * mC) * (sig_th_nm / lam_nm) ** 2
+
+
+def temperature_eV_bounds(sigma_px, sigma_err_px, center_px, lam_nm,
+                          inst_sigma_px):
+    """
+    (T, minus, plus): T and its ASYMMETRIC 1-sigma error bars, from the fitted
+    width's own stderr pushed through the same T formula.
+
+    Propagated by re-evaluating T at sigma -/+ its stderr rather than by a
+    derivative. T is quadratic in sigma and the instrumental width is removed
+    in quadrature underneath, so the mapping is distinctly non-linear near the
+    instrumental floor: a width one sigma below the fit can sit AT the floor,
+    where T pins to 0 and the lower bar is short while the upper one is not.
+    A symmetric +/- bar would misstate exactly the frames where it matters.
+    """
+    T = temperature_eV(sigma_px, center_px, lam_nm, inst_sigma_px)
+    e = float(sigma_err_px)
+    if not np.isfinite(e) or e <= 0.0:
+        return T, 0.0, 0.0
+    T_lo = temperature_eV(max(sigma_px - e, 0.0), center_px, lam_nm, inst_sigma_px)
+    T_hi = temperature_eV(sigma_px + e, center_px, lam_nm, inst_sigma_px)
+    return T, max(T - T_lo, 0.0), max(T_hi - T, 0.0)
 
 
 # --- parameter packing ------------------------------------------------------
@@ -622,12 +693,7 @@ def _covariance(res, chi2r):
     return cov
 
 
-# The Zeeman pattern is symmetric, so to first order in B the blend is
-# unchanged: d(model)/dB is exactly 0 at B = 0 and the response is quadratic.
-# A gradient-based fit seeded near zero therefore cannot climb out of B = 0
-# even when a much better minimum exists elsewhere. Every B fit below is
-# started from this ladder and the best chi2 kept.
-B_SEEDS = (0.05, 0.4, 0.8, 1.2, 1.6)
+
 
 
 def fit_frame(fd, fit_B=True, B_fixed=0.0, share_sigma=False):
@@ -741,17 +807,21 @@ def fit_global_B(frames, share_sigma=False):
     dof = max(int(np.sum(rows)) - res.x.size, 1)
     chi2r = chi2 / dof
     cov = _covariance(res, chi2r)
+    err_all = np.sqrt(np.clip(np.diag(cov), 0.0, np.inf))
     B = float(res.x[0])
     B_err = float(np.sqrt(max(cov[0, 0], 0.0)))
 
     per = []
     for i, fd in enumerate(frames):
         fp = res.x[1 + k * i: 1 + k * (i + 1)]
+        fe = err_all[1 + k * i: 1 + k * (i + 1)]
         d = {"frame": fd["frame"]}
-        for name, v in zip(frame_pnames(share_sigma), fp):
+        for name, v, e in zip(frame_pnames(share_sigma), fp, fe):
             d[name] = float(v)
+            d[name + "_err"] = float(e)
         if share_sigma:
             d["sigma_C1"] = d["sigma_C2"] = d["sigma"]
+            d["sigma_C1_err"] = d["sigma_C2_err"] = d["sigma_err"]
         d["center_C2"] = float(c2_center_from_c1(d["center_C1"]))
         rr = _frame_residual(fp, fd, B, share_sigma)
         d["chi2"] = float(np.sum(rr ** 2))
@@ -869,7 +939,8 @@ def check_B0_reduction(frames):
 
 def run_zeeman_analysis(exp_i=559, first_frame=ZEEMAN_FIRST_FRAME,
                         last_frame=ZEEMAN_LAST_FRAME, do_plot=True,
-                        plot_frame=13, share_sigma=False, frames=None):
+                        plot_frame=13, share_sigma=False, frames=None,
+                        exp_dir_name=None):
     mode = ("SHARED sigma (one width for both lines)" if share_sigma
             else "INDEPENDENT sigma per line")
     print("=" * 78)
@@ -905,7 +976,7 @@ def run_zeeman_analysis(exp_i=559, first_frame=ZEEMAN_FIRST_FRAME,
         print(f"\nLoading C{exp_i} frames {first_frame}-{last_frame} ...")
         frames = []
         for f in range(first_frame, last_frame + 1):
-            fd = prepare_frame(exp_i, f)
+            fd = prepare_frame(exp_i, f, exp_dir_name)
             if fd is None:
                 print(f"  frame {f}: skipped (load or seed fit failed)")
             else:
@@ -939,14 +1010,21 @@ def run_zeeman_analysis(exp_i=559, first_frame=ZEEMAN_FIRST_FRAME,
         r0 = fit_frame(fd, fit_B=False, share_sigma=share_sigma)
         a1o, c1o, s1o, _ = fd["old_C1"]
         a2o, c2o, s2o, _ = fd["old_C2"]
+        s1o_e, s2o_e = fd["old_C1_err"][2], fd["old_C2_err"][2]
+        T1o, T1o_m, T1o_p = temperature_eV_bounds(s1o, s1o_e, c1o, lambda_C1,
+                                                  inst_sigma_C1)
+        T2o, T2o_m, T2o_p = temperature_eV_bounds(s2o, s2o_e, c2o, lambda_C2,
+                                                  inst_sigma_C2)
         rec = {
             "frame": fd["frame"], "fit": rb, "fit0": r0,
             "dchi2": r0["chi2"] - rb["chi2"],
             "T1_new": temperature_eV(rb["sigma_C1"], rb["center_C1"], lambda_C1, inst_sigma_C1),
             "T2_new": temperature_eV(rb["sigma_C2"], rb["center_C2"], lambda_C2, inst_sigma_C2),
-            "T1_old": temperature_eV(s1o, c1o, lambda_C1, inst_sigma_C1),
-            "T2_old": temperature_eV(s2o, c2o, lambda_C2, inst_sigma_C2),
+            "T1_old": T1o, "T2_old": T2o,
+            "T1_old_m": T1o_m, "T1_old_p": T1o_p,
+            "T2_old_m": T2o_m, "T2_old_p": T2o_p,
             "sig1_old": s1o, "sig2_old": s2o,
+            "sig1_old_err": s1o_e, "sig2_old_err": s2o_e,
         }
         rows.append(rec)
         print(f"  {rec['frame']:5d} | {rb['B']:7.3f} {rb['B_err']:7.3f} "
@@ -1091,18 +1169,38 @@ def run_zeeman_analysis(exp_i=559, first_frame=ZEEMAN_FIRST_FRAME,
           f"{'T2_new':>7} {'T2_old':>7} {'dT2%':>7}")
     gT = []
     for d, rec in zip(g["per_frame"], rows):
-        T1 = temperature_eV(d["sigma_C1"], d["center_C1"], lambda_C1, inst_sigma_C1)
-        T2 = temperature_eV(d["sigma_C2"], d["center_C2"], lambda_C2, inst_sigma_C2)
+        T1, T1_m, T1_p = temperature_eV_bounds(
+            d["sigma_C1"], d.get("sigma_C1_err", 0.0), d["center_C1"],
+            lambda_C1, inst_sigma_C1)
+        T2, T2_m, T2_p = temperature_eV_bounds(
+            d["sigma_C2"], d.get("sigma_C2_err", 0.0), d["center_C2"],
+            lambda_C2, inst_sigma_C2)
         # A percentage against an old T that railed at 0 eV is meaningless, so
         # print a dash rather than a 13-digit number.
         def _pct(new, old):
             return f"{100.0 * (new - old) / old:7.1f}" if old > 1.0 else f"{'-':>7}"
         gT.append({"frame": d["frame"], "T1": T1, "T2": T2,
-                   "T1_old": rec["T1_old"], "T2_old": rec["T2_old"]})
+                   "T1_m": T1_m, "T1_p": T1_p, "T2_m": T2_m, "T2_p": T2_p,
+                   "T1_old": rec["T1_old"], "T2_old": rec["T2_old"],
+                   "T1_old_m": rec["T1_old_m"], "T1_old_p": rec["T1_old_p"],
+                   "T2_old_m": rec["T2_old_m"], "T2_old_p": rec["T2_old_p"]})
         print(f"  {d['frame']:5d} | {d['sigma_C1']:6.2f} {rec['sig1_old']:9.2f} "
               f"{d['sigma_C2']:6.2f} {rec['sig2_old']:9.2f} | "
               f"{T1:7.1f} {rec['T1_old']:7.1f} {_pct(T1, rec['T1_old'])} | "
               f"{T2:7.1f} {rec['T2_old']:7.1f} {_pct(T2, rec['T2_old'])}")
+
+    if share_sigma:
+        # Both temperatures come from ONE fitted width, so they differ only by
+        # the deterministic lambda^2 and dispersion factors, not by anything
+        # measured. Quantify that before the plot collapses them into one curve.
+        spread = [200.0 * abs(t["T1"] - t["T2"]) / (t["T1"] + t["T2"])
+                  for t in gT if (t["T1"] + t["T2"]) > 0]
+        if spread:
+            print(f"\n  shared sigma: T(C1) and T(C2) come from the same fitted")
+            print(f"  width and differ by at most {max(spread):.2f}% "
+                  f"(median {np.median(spread):.2f}%), which is the lambda^2 and")
+            print("  dispersion conversion alone. They are NOT two independent")
+            print("  measurements here, and the T plot draws them as one curve.")
 
     # The existing pipeline only reports T over frames 8-22; outside that window
     # the C lines are weak enough that the widths rail against their bounds and
@@ -1191,14 +1289,49 @@ def run_zeeman_analysis(exp_i=559, first_frame=ZEEMAN_FIRST_FRAME,
         ax.legend(fontsize=8)
 
         ax = axes[2]
-        ax.plot(fr, [t["T1_old"] for t in gT], "s--", ms=4, color="tab:green",
-                alpha=0.6, label="T(C1) old")
-        ax.plot(fr, [t["T1"] for t in gT], "o-", ms=4, color="tab:green",
-                label="T(C1) global-B")
-        ax.plot(fr, [t["T2_old"] for t in gT], "s--", ms=4, color="tab:orange",
-                alpha=0.6, label="T(C2) old")
-        ax.plot(fr, [t["T2"] for t in gT], "o-", ms=4, color="tab:orange",
-                label="T(C2) global-B")
+        # Bars are the fitted width's own stderr pushed through the T formula,
+        # so they are ASYMMETRIC: T goes as (sigma^2 - sigma_inst^2), which
+        # compresses the low side and stretches the high side, and pins the
+        # low side at 0 once sigma - 1 sigma reaches the instrumental floor.
+        # They are the STATISTICAL width error only - they do not carry the
+        # assumed instrumental sigma, the geometry assumption, or the
+        # B-vs-width degeneracy, all of which are larger.
+        def _tbars(key_m, key_p):
+            return np.array([[t[key_m] for t in gT], [t[key_p] for t in gT]])
+
+        # The OLD curves stay separate in both width models: the existing
+        # pipeline fits C1 and C2 with independent widths, so those two
+        # temperatures carry genuinely different information.
+        ax.errorbar(fr, [t["T1_old"] for t in gT],
+                    yerr=_tbars("T1_old_m", "T1_old_p"), fmt="s--", ms=4, lw=1,
+                    elinewidth=0.8, capsize=2, color="tab:green", alpha=0.55,
+                    label="T(C1) old")
+        ax.errorbar(fr, [t["T2_old"] for t in gT],
+                    yerr=_tbars("T2_old_m", "T2_old_p"), fmt="s--", ms=4, lw=1,
+                    elinewidth=0.8, capsize=2, color="tab:orange", alpha=0.55,
+                    label="T(C2) old")
+
+        if share_sigma:
+            # One width feeds both lines, so T(C1) and T(C2) are the same
+            # number up to the lambda^2 and dispersion factors - a sub-percent
+            # difference that would draw as one curve with two overlapping sets
+            # of bars. Plot the mean once instead of pretending to two
+            # independent measurements, which under a shared sigma it is not.
+            ax.errorbar(fr, [0.5 * (t["T1"] + t["T2"]) for t in gT],
+                        yerr=np.array(
+                            [[0.5 * (t["T1_m"] + t["T2_m"]) for t in gT],
+                             [0.5 * (t["T1_p"] + t["T2_p"]) for t in gT]]),
+                        fmt="o-", ms=4, lw=1.4, elinewidth=1.0, capsize=2,
+                        color="tab:purple",
+                        label="T(C1 & C2) global-B, shared sigma")
+        else:
+            ax.errorbar(fr, [t["T1"] for t in gT], yerr=_tbars("T1_m", "T1_p"),
+                        fmt="o-", ms=4, lw=1.4, elinewidth=1.0, capsize=2,
+                        color="tab:green", label="T(C1) global-B")
+            ax.errorbar(fr, [t["T2"] for t in gT], yerr=_tbars("T2_m", "T2_p"),
+                        fmt="o-", ms=4, lw=1.4, elinewidth=1.0, capsize=2,
+                        color="tab:orange", label="T(C2) global-B")
+        ax.set_ylim(bottom=0.0)
         ax.set_xlabel("Frame number")
         ax.set_ylabel("T [eV]")
         ax.set_title("Temperature before and after\nthe Zeeman component model")
@@ -1234,7 +1367,8 @@ def run_zeeman_analysis(exp_i=559, first_frame=ZEEMAN_FIRST_FRAME,
 
 
 def run_both_width_models(exp_i=559, first_frame=ZEEMAN_FIRST_FRAME,
-                          last_frame=ZEEMAN_LAST_FRAME, plot_frame=13):
+                          last_frame=ZEEMAN_LAST_FRAME, plot_frame=13,
+                          exp_dir_name=None):
     """
     Run the whole analysis twice on the SAME loaded frames - independent sigma
     per line, then one sigma shared between the lines - and compare them.
@@ -1246,7 +1380,7 @@ def run_both_width_models(exp_i=559, first_frame=ZEEMAN_FIRST_FRAME,
     print(f"Loading C{exp_i} frames {first_frame}-{last_frame} ...")
     frames = []
     for f in range(first_frame, last_frame + 1):
-        fd = prepare_frame(exp_i, f)
+        fd = prepare_frame(exp_i, f, exp_dir_name)
         if fd is None:
             print(f"  frame {f}: skipped (load or seed fit failed)")
         else:
@@ -1257,11 +1391,11 @@ def run_both_width_models(exp_i=559, first_frame=ZEEMAN_FIRST_FRAME,
 
     indep = run_zeeman_analysis(exp_i, first_frame, last_frame, do_plot=True,
                                 plot_frame=plot_frame, share_sigma=False,
-                                frames=frames)
+                                frames=frames, exp_dir_name=exp_dir_name)
     print("\n\n")
     shared = run_zeeman_analysis(exp_i, first_frame, last_frame, do_plot=True,
                                  plot_frame=plot_frame, share_sigma=True,
-                                 frames=frames)
+                                 frames=frames, exp_dir_name=exp_dir_name)
 
     # ---- head-to-head -----------------------------------------------------
     print("\n" + "=" * 78)
@@ -1322,18 +1456,18 @@ SHOW_PLOTS = True
 
 
 def run_legacy_frame_scan(exp_i=559, first_frame=5, last_frame=50,
-                          first_frame_t=8, last_frame_t=22):
+                          first_frame_t=8, last_frame_t=22, exp_dir_name=None):
     """The original per-frame n_e / T scan, unchanged."""
     frame_amount = last_frame - first_frame + 1
     n = [0] * frame_amount
     t1 = [0] * frame_amount
     t2 = [0] * frame_amount # Array for the C2 temperatures
-    
+
     for frame_i in range(first_frame, last_frame + 1):
         # You can test a single frame plot by changing this temporarily, e.g., if frame_i == 5: extract_nt_from_frame(exp_i, frame_i, do_plot=True)
-        if(frame_i == 13):  # plot only for frame 
-            extract_nt_from_frame(exp_i, frame_i, do_plot=True)
-        n[frame_i - first_frame], t1[frame_i - first_frame], t2[frame_i - first_frame] = extract_nt_from_frame(exp_i, frame_i, do_plot=False)
+        if(frame_i == 13):  # plot only for frame
+            extract_nt_from_frame(exp_i, frame_i, do_plot=True, exp_dir_name=exp_dir_name)
+        n[frame_i - first_frame], t1[frame_i - first_frame], t2[frame_i - first_frame] = extract_nt_from_frame(exp_i, frame_i, do_plot=False, exp_dir_name=exp_dir_name)
 
     # Plot n_e, T_C1, and T_C2 vs frame_i
     plt.figure(figsize=(15, 5)) # Increased width to fit 3 plots nicely
@@ -1389,14 +1523,20 @@ if __name__ == "__main__":
     if "--width-model" in sys.argv:
         WIDTH_MODEL = sys.argv[sys.argv.index("--width-model") + 1]
 
+    EXP_DIR_NAME = EXPERIMENT_DIR_NAME or None
+    if "--exp-dir" in sys.argv:
+        EXP_DIR_NAME = sys.argv[sys.argv.index("--exp-dir") + 1]
+
     if "--legacy" in sys.argv:
-        run_legacy_frame_scan(EXP_I)
+        run_legacy_frame_scan(EXP_I, exp_dir_name=EXP_DIR_NAME)
     else:
         SHOW_PLOTS = "--no-plot" not in sys.argv
         if WIDTH_MODEL == "both":
             run_both_width_models(EXP_I, first_frame=FIRST, last_frame=LAST,
-                                  plot_frame=PLOT_FRAME)
+                                  plot_frame=PLOT_FRAME,
+                                  exp_dir_name=EXP_DIR_NAME)
         else:
             run_zeeman_analysis(EXP_I, first_frame=FIRST, last_frame=LAST,
                                 do_plot=True, plot_frame=PLOT_FRAME,
-                                share_sigma=(WIDTH_MODEL == "shared"))
+                                share_sigma=(WIDTH_MODEL == "shared"),
+                                exp_dir_name=EXP_DIR_NAME)

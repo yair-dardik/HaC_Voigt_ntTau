@@ -8,6 +8,10 @@ if __name__ == "__main__":
     exp_i = 559
     first_frame = 5
     last_frame = 50
+    # Name of the experiment folder under HaC.C3_BASE_DIR, which must itself
+    # contain a ProEM/ subfolder with the .tif frames. Leave empty to fall
+    # back to the old convention of "C<exp_i>" (e.g. exp_i=559 -> "C559").
+    exp_dir_name = ""
 
     frame_amount = last_frame - first_frame + 1
     
@@ -30,7 +34,7 @@ if __name__ == "__main__":
         
         try:
             # Load the data
-            tiff_path, _, _ = HaC.prompt_c3_tiff_path(exp_i, frame_i)
+            tiff_path, _, _ = HaC.prompt_c3_tiff_path(exp_i, frame_i, exp_dir_name)
             x_px, profile = HaC.load_full_profile(tiff_path, HaC.Y_RANGE, x_min=_min_pix, x_max=_max_pix)
             
             # Convert pixels to wavelength
