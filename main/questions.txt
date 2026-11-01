@@ -50,3 +50,17 @@ only files to actually submit are HaC_OroEM_Yair and plot_spec
 
 surprisingly the H_alpha fit has high chi 
 it dos make sense when seeing the fit
+
+The branching ratio point is a thing
+
+Synthetic self-reversal → B bias test
+
+Generate a synthetic C1+C2 profile using your own forward model at B = 2.2 T, with a realistic Gaussian width and the instrumental width you already assume.
+Apply a self-reversal to it — multiply by an absorption factor exp(−τ(λ)) with a Gaussian τ centered at line center; sweep the depth τ₀ over a few values (e.g. 0, 0.5, 1, 2).
+Add noise comparable to your data.
+Run each synthetic profile through your existing fitting pipeline unchanged.
+Plot fitted B vs τ₀.
+
+If fitted B drops toward ~1.75 T as τ₀ grows, self-reversal is demonstrated as the bias mechanism rather than asserted. If it doesn't move, or moves upward, you've ruled it out — also a result worth a sentence.
+
+Your PDF already contains the test that would separate them — thermal broadening scales as 1/√m, turbulence doesn't. You have hydrogen and carbon in the same spectra, a factor of 12 in mass. Comparing T_H against T_C after the Zeeman correction is a direct check on whether the leftover width is thermal or bulk, and it needs no new data.

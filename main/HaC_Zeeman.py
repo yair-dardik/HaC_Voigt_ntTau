@@ -1449,7 +1449,58 @@ def run_both_width_models(exp_i=559, first_frame=ZEEMAN_FIRST_FRAME,
     print("  With one shared width the two lines necessarily give the same T up")
     print("  to the lambda^2 factor, so T(C1) and T(C2) stop being an")
     print("  independent consistency check - that is the price of the constraint.")
+
+    plot_chi2_width_comparison(indep, shared, exp_i)
     return {"independent": indep, "shared": shared}
+
+
+def plot_chi2_width_comparison(indep, shared, exp_i):
+    """
+    chi2 of the independent-sigma vs shared-sigma models, both under the ONE
+    global B (the per-frame-B and B = 0 fits are deliberately left out).
+
+    One panel: per-frame reduced chi2 of each model, annotated with the total
+    (global) relative difference between them.
+    """
+    gi, gs = indep["global"], shared["global"]
+    fr = [d["frame"] for d in gi["per_frame"]]
+    pct = 100.0 * abs(gs["chi2r"] - gi["chi2r"]) / gi["chi2r"]
+
+    fig, ax = plt.subplots(figsize=(7, 4.8))
+    # Statistical error of a reduced chi2 with n dof: sqrt(2 / n). The per-frame
+    # dof is recovered as chi2 / chi2r (that is how chi2r was defined).
+    def _chi2r_and_err(per_frame):
+        c2r = np.array([d["chi2r"] for d in per_frame])
+        dof = np.array([d["chi2"] / d["chi2r"] if d["chi2r"] > 0 else np.nan
+                        for d in per_frame])
+        return c2r, c2r * np.sqrt(2.0 / dof)
+
+    c2r_i, err_i = _chi2r_and_err(gi["per_frame"])
+    c2r_s, err_s = _chi2r_and_err(gs["per_frame"])
+    ax.errorbar(fr, c2r_i, yerr=err_i, fmt="o-", ms=4, lw=1.2, elinewidth=0.8,
+                capsize=2, color="tab:blue", label="independent sigma")
+    ax.errorbar(fr, c2r_s, yerr=err_s, fmt="^-", ms=4, lw=1.2, elinewidth=0.8,
+                capsize=2, color="tab:purple", label="shared sigma")
+    ax.set_xlabel("Frame number")
+    ax.set_ylabel("reduced chi2")
+    ax.set_title("Per-frame reduced chi2 (global B)")
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=8, loc="upper left")
+    ax.text(0.98, 0.97,
+            f"Total difference in global reduced chi2: "
+            f"{'< 2' if pct < 2.0 else f'{pct:.1f}'}%\n"
+            f"({gi['chi2r']:.3f} independent vs {gs['chi2r']:.3f} shared)",
+            transform=ax.transAxes, ha="right", va="top", fontsize=9,
+            bbox=dict(boxstyle="round", fc="white", ec="gray", alpha=0.9))
+    fig.suptitle(f"C{exp_i}: independent vs shared sigma, one global B")
+    plt.tight_layout()
+    out_png = os.path.join(C3_BASE_DIR, f"zeeman_chi2_sigma_compare_C{exp_i}.png")
+    plt.savefig(out_png, dpi=130)
+    print(f"\n  figure written to {out_png}")
+    if SHOW_PLOTS:
+        plt.show()
+    else:
+        plt.close(fig)
 
 
 SHOW_PLOTS = True

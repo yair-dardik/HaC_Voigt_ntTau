@@ -42,6 +42,10 @@ if not C3_BASE_DIR:
             break
     else:
         C3_BASE_DIR = os.getcwd()
+# Folder where PNGs of the plots are saved (created on demand)
+PLOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plots")
+os.makedirs(PLOT_DIR, exist_ok=True)
+
 # --- Calibration constants (pixel <-> wavelength) ---
 PIXEL_CENTER_REF = 800.0
 LAMBDA_CENTER_REF_NM = 658.0
@@ -272,7 +276,8 @@ def prompt_c3_tiff_path(exp_i=None, frame_i=None, exp_dir_name=None):
 #########################################################################
 
 
-def extract_nt_from_frame(exp_i, frame_i, do_plot=False, exp_dir_name=None):
+def extract_nt_from_frame(exp_i, frame_i, do_plot=False, exp_dir_name=None,
+                          return_errors=False):
     tiff_path, exp_number, frame_number = prompt_c3_tiff_path(exp_i, frame_i,
                                                                exp_dir_name)
     print(f"\n=====================================")
@@ -301,12 +306,15 @@ def extract_nt_from_frame(exp_i, frame_i, do_plot=False, exp_dir_name=None):
     n_e_cm3 = 0
     T_C1_eV = 0
     T_C2_eV = 0
+    n_e_err = 0.0
+    T_C1_err = 0.0
+    T_C2_err = 0.0
     try:
         # --- 1. Fit Hα (Voigt) ---
         x_px_Ha, x_nm_Ha, prof_Ha = get_roi(lambda_Ha, 0.6)
         p0_Ha = [np.max(prof_Ha), x_px_Ha[np.argmax(prof_Ha)], max(3.0, 1.5 * inst_sigma_Ha), 3, np.min(prof_Ha)]
         bounds_Ha = ([0, x_px_Ha[0], inst_sigma_Ha, 0, 0], [np.inf, x_px_Ha[-1], 100, 100, np.max(prof_Ha)])
-        popt_Ha, _ = curve_fit(voigt, x_px_Ha, prof_Ha, p0=p0_Ha, bounds=bounds_Ha)
+        popt_Ha, pcov_Ha = curve_fit(voigt, x_px_Ha, prof_Ha, p0=p0_Ha, bounds=bounds_Ha)
         amp_Ha, cen_Ha, sig_Ha, gam_Ha, off_Ha = popt_Ha
         fit_Ha = voigt(x_px_Ha, amp_Ha, cen_Ha, sig_Ha, gam_Ha, off_Ha)
 
@@ -314,7 +322,7 @@ def extract_nt_from_frame(exp_i, frame_i, do_plot=False, exp_dir_name=None):
         x_px_C1, x_nm_C1, prof_C1 = get_roi(lambda_C1, 0.2)
         p0_C1 = [np.max(prof_C1), x_px_C1[np.argmax(prof_C1)], max(3.0, 1.5 * inst_sigma_C1), np.min(prof_C1)]
         bounds_C1 = ([0, x_px_C1[0], inst_sigma_C1, 0], [np.inf, x_px_C1[-1], 100, np.max(prof_C1)])
-        popt_C1, _ = curve_fit(gaussian, x_px_C1, prof_C1, p0=p0_C1, bounds=bounds_C1)
+        popt_C1, pcov_C1 = curve_fit(gaussian, x_px_C1, prof_C1, p0=p0_C1, bounds=bounds_C1)
         amp_C1, cen_C1, sig_C1, off_C1 = popt_C1
         fit_C1 = gaussian(x_px_C1, amp_C1, cen_C1, sig_C1, off_C1)
 
@@ -322,7 +330,7 @@ def extract_nt_from_frame(exp_i, frame_i, do_plot=False, exp_dir_name=None):
         x_px_C2, x_nm_C2, prof_C2 = get_roi(lambda_C2, 0.2)
         p0_C2 = [np.max(prof_C2), x_px_C2[np.argmax(prof_C2)], max(3.0, 1.5 * inst_sigma_C2), np.min(prof_C2)]
         bounds_C2 = ([0, x_px_C2[0], inst_sigma_C2, 0], [np.inf, x_px_C2[-1], 100, np.max(prof_C2)])
-        popt_C2, _ = curve_fit(gaussian, x_px_C2, prof_C2, p0=p0_C2, bounds=bounds_C2)
+        popt_C2, pcov_C2 = curve_fit(gaussian, x_px_C2, prof_C2, p0=p0_C2, bounds=bounds_C2)
         amp_C2, cen_C2, sig_C2, off_C2 = popt_C2
         fit_C2 = gaussian(x_px_C2, amp_C2, cen_C2, sig_C2, off_C2)
 
@@ -333,7 +341,10 @@ def extract_nt_from_frame(exp_i, frame_i, do_plot=False, exp_dir_name=None):
         stark_fwhm_nm = 2 * gam_Ha_nm
         if stark_fwhm_nm > 0:
             n_e_cm3 = 10**17 * (stark_fwhm_nm / 1.098)**1.471
-            print(f"Hα Electron Density (n_e):  {n_e_cm3:.2e} cm^-3")
+            # n_e ~ gamma^1.471  ->  relative error scales by the exponent
+            gam_err = np.sqrt(abs(pcov_Ha[3, 3]))
+            n_e_err = n_e_cm3 * 1.471 * gam_err / gam_Ha if gam_Ha > 0 else 0.0
+            print(f"Hα Electron Density (n_e):  {n_e_cm3:.2e} +/- {n_e_err:.1e} cm^-3")
 
         # C1 Temperature Calculation
         sig_C1_nm = width_px_to_nm(sig_C1, cen_C1)
@@ -342,7 +353,10 @@ def extract_nt_from_frame(exp_i, frame_i, do_plot=False, exp_dir_name=None):
             sig_th_C1_nm = math.sqrt(sig_C1_nm**2 - inst_sigma_C1_nm**2)
             mc2_C_eV = 931.49e6 * mC
             T_C1_eV = mc2_C_eV * (sig_th_C1_nm / lambda_C1)**2
-            print(f"C1 Temperature (T):         {T_C1_eV:.2f} eV")
+            # T ~ sig_nm^2 - inst^2, so dT = (mc2/lambda^2) * 2 * sig_nm * d(sig_nm)
+            sig_C1_nm_err = sig_C1_nm * np.sqrt(abs(pcov_C1[2, 2])) / sig_C1
+            T_C1_err = mc2_C_eV / lambda_C1**2 * 2 * sig_C1_nm * sig_C1_nm_err
+            print(f"C1 Temperature (T):         {T_C1_eV:.2f} +/- {T_C1_err:.2f} eV")
 
         # C2 Temperature Calculation
         sig_C2_nm = width_px_to_nm(sig_C2, cen_C2)
@@ -352,10 +366,14 @@ def extract_nt_from_frame(exp_i, frame_i, do_plot=False, exp_dir_name=None):
             mc2_C_eV = 931.49e6 * mC
             # Fixed lambda_C1 to lambda_C2 here
             T_C2_eV = mc2_C_eV * (sig_th_C2_nm / lambda_C2)**2 
-            print(f"C2 Temperature (T):         {T_C2_eV:.2f} eV")
+            sig_C2_nm_err = sig_C2_nm * np.sqrt(abs(pcov_C2[2, 2])) / sig_C2
+            T_C2_err = mc2_C_eV / lambda_C2**2 * 2 * sig_C2_nm * sig_C2_nm_err
+            print(f"C2 Temperature (T):         {T_C2_eV:.2f} +/- {T_C2_err:.2f} eV")
 
     except RuntimeError as e:
         print(f"WARNING: Curve fitting failed for frame {frame_number}. Returning zeros.")
+        if return_errors:
+            return (0, 0, 0), (0, 0, 0)
         return 0, 0, 0
 
     # --- Plotting the Fit (Only if do_plot is True) ---
@@ -373,9 +391,12 @@ def extract_nt_from_frame(exp_i, frame_i, do_plot=False, exp_dir_name=None):
         plt.grid(True)
         plt.legend()
         plt.tight_layout()
+        plt.savefig(os.path.join(PLOT_DIR, f"C{exp_number}_frame{frame_number}_fit.png"), dpi=200)
         plt.show()
 
     # Return n_e from Ha, T from C1, and T from C2
+    if return_errors:
+        return (n_e_cm3, T_C1_eV, T_C2_eV), (n_e_err, T_C1_err, T_C2_err)
     return n_e_cm3, T_C1_eV, T_C2_eV
 
 
@@ -391,18 +412,23 @@ if __name__ == "__main__":
     n = [0] * frame_amount
     t1 = [0] * frame_amount
     t2 = [0] * frame_amount # Array for the C2 temperatures
+    n_err = [0] * frame_amount
+    t1_err = [0] * frame_amount
+    t2_err = [0] * frame_amount
     
     for frame_i in range(first_frame, last_frame + 1):
         # You can test a single frame plot by changing this temporarily, e.g., if frame_i == 5: extract_nt_from_frame(exp_i, frame_i, do_plot=True)
         if(frame_i == FRAME_TO_PLOT):  # plot only for frame 
             extract_nt_from_frame(exp_i, frame_i, do_plot=True)
-        n[frame_i - first_frame], t1[frame_i - first_frame], t2[frame_i - first_frame] = extract_nt_from_frame(exp_i, frame_i, do_plot=False)
+        i = frame_i - first_frame
+        (n[i], t1[i], t2[i]), (n_err[i], t1_err[i], t2_err[i]) = extract_nt_from_frame(
+            exp_i, frame_i, do_plot=False, return_errors=True)
 
     # Plot n_e, T_C1, and T_C2 vs frame_i
     plt.figure(figsize=(15, 5)) # Increased width to fit 3 plots nicely
     
     plt.subplot(1, 3, 1)
-    plt.plot(range(first_frame, last_frame + 1), n, marker='o', color='blue')
+    plt.errorbar(range(first_frame, last_frame + 1), n, yerr=n_err, marker='o', color='blue', capsize=3)
     plt.xlabel("Frame Number")
     plt.ylabel("Electron Density (n_e) [cm^-3]")
     plt.title(f"C{exp_i} n_e vs Frame")
@@ -413,18 +439,19 @@ if __name__ == "__main__":
     t_frames = range(first_frame_t, last_frame_t + 1)
 
     plt.subplot(1, 3, 2)
-    plt.plot(t_frames, t1[t_start_idx:t_end_idx], marker='o', color='green')
+    plt.errorbar(t_frames, t1[t_start_idx:t_end_idx], yerr=t1_err[t_start_idx:t_end_idx], marker='o', color='green', capsize=3)
     plt.xlabel("Frame Number")
     plt.ylabel("Temperature (T_C1) [eV]")
     plt.title(f"C{exp_i} T(C1) vs Frame (not all frames)")
     plt.grid(True)
 
     plt.subplot(1, 3, 3)
-    plt.plot(t_frames, t2[t_start_idx:t_end_idx], marker='o', color='orange')
+    plt.errorbar(t_frames, t2[t_start_idx:t_end_idx], yerr=t2_err[t_start_idx:t_end_idx], marker='o', color='orange', capsize=3)
     plt.xlabel("Frame Number")
     plt.ylabel("Temperature (T_C2) [eV]")
     plt.title(f"C{exp_i} T(C2) vs Frame (not all frames)")
     plt.grid(True)
     
     plt.tight_layout()
+    plt.savefig(os.path.join(PLOT_DIR, f"C{exp_i}_overall.png"), dpi=200)
     plt.show()
