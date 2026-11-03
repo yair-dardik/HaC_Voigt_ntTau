@@ -442,12 +442,17 @@ def extract_nt_from_frame(exp_i, frame_i, do_plot=False, exp_dir_name=None):
 # Wavelength shift per unit of reduced shift per tesla, in ANGSTROM.
 ZEEMAN_ANGSTROM_PER_UNIT_PER_TESLA = 0.2020
 
+# Strengths are the intensities seen PERPENDICULAR to B: the squared Clebsch-
+# Gordan coefficient of each component times 2 for pi (Delta m = 0) and times 1
+# for sigma (Delta m = +/-1), because a pi dipole radiates twice as much as a
+# sigma one at 90 degrees. C1: CG^2 = 1:3:2:2:3:1 (sigma:sigma:pi:pi:sigma:sigma)
+# -> 1:3:4:4:3:1. C2: CG^2 = 2:1:1:2 -> 1:1:1:1.
 ZEEMAN_PATTERN = {
     # C1: 657.80482 nm, 2P3/2 - 2S1/2, six components
     "C1": {
         "lam_nm": lambda_C1,
         "shifts": np.array([-5.0 / 3, -1.0, -1.0 / 3, 1.0 / 3, 1.0, 5.0 / 3]),
-        "strengths": np.array([1.0, 3.0, 2.0, 2.0, 3.0, 1.0]),
+        "strengths": np.array([1.0, 3.0, 4.0, 4.0, 3.0, 1.0]),
     },
     # C2: 658.28761 nm, 2P1/2 - 2S1/2, four components
     "C2": {
@@ -932,7 +937,7 @@ def check_B0_reduction(frames):
                      if ok else "FAIL: the B=0 model is NOT the existing model."))
     print("  (The residual difference is the difference of the same two models")
     print("   against the same data, so it equals the model difference exactly.")
-    print("   The floor is the weight sum 1/10+3/10+2/10+2/10+3/10+1/10, which")
+    print("   The floor is the weight sum 1/16+3/16+4/16+4/16+3/16+1/16, which")
     print("   is 1 only to round-off in binary floating point.)")
     return ok
 

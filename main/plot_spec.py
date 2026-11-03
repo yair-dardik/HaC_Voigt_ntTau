@@ -1,3 +1,4 @@
+import os
 import HaC_main as HaC
 import numpy as np
 import matplotlib.pyplot as plt
@@ -65,4 +66,5 @@ if __name__ == "__main__":
         
     plt.tight_layout()
     plt.subplots_adjust(top=0.95) # Make slightly more room for the main title
+    plt.savefig(os.path.join(HaC.PLOT_DIR, f"C{exp_i}_all_frames.png"), dpi=200)
     plt.show()
